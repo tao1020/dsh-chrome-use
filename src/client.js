@@ -74,7 +74,10 @@ function StatusPage({ read, pair }) {
     let timer;
     try {
       const result = await Promise.race([read(), new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('查询超时，请确认 Harness 服务正常后重试。')), 5000); })]);
-      if (!result.ok) throw new Error('无法读取连接状态，请稍后重试。');
+      if (!result.ok) {
+        const failure = result.error ?? {};
+        throw new Error(`无法读取连接状态：[${failure.code ?? 'unknown'}] ${failure.message ?? 'Harness 拒绝了查询'}`);
+      }
       const value = parseStatus(result.value);
       if (id === generation.current) setState({ value });
       if (value.connected && alive.current) setPairing({});
@@ -87,7 +90,11 @@ function StatusPage({ read, pair }) {
     setPairing({ loading: true });
     try {
       const result = await pair();
-      if (!result || !result.ok) throw new Error('生成配对码失败，请稍后重试。');
+      if (!result) throw new Error('Harness 没有返回配对结果');
+      if (!result.ok) {
+        const failure = result.error ?? {};
+        throw new Error(`[${failure.code ?? 'unknown'}] ${failure.message ?? 'Harness 拒绝了配对请求'}`);
+      }
       const value = parsePairing(result.value);
       const stamp = Date.now();
       if (!alive.current) return;
