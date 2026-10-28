@@ -10,6 +10,13 @@ function safeUrl(value) {
   try { const u = new URL(value); return ['http:', 'https:'].includes(u.protocol) ? `${u.origin}${u.pathname}`.slice(0, 2000) : ''; } catch { return ''; }
 }
 
+const GROUP_COLORS = ['grey', 'blue', 'red', 'yellow', 'green', 'pink', 'purple', 'cyan', 'orange'];
+export function groupColor(title) {
+  let hash = 0;
+  for (const char of title) hash = (hash * 31 + (char.codePointAt(0) ?? 0)) >>> 0;
+  return GROUP_COLORS[hash % GROUP_COLORS.length];
+}
+
 async function bounded(promise, signal, label, milliseconds = 7000) {
   signal?.throwIfAborted();
   let timer;
@@ -103,6 +110,22 @@ export class BrowserController {
     return object.objectId;
   }
 
+  // Grouping is best effort for the caller: an older Chrome or a pinned tab must
+  // not fail the open, but the tab still belongs to the named series when it can.
+  async group(tabId, title, signal) {
+    const api = this.api;
+    if (typeof api.tabs?.group !== 'function') throw new Error('GROUPING_UNSUPPORTED: this Chrome exposes no tabs.group API');
+    const tab = await bounded(api.tabs.get(tabId), signal, 'tabs.get');
+    let groupId;
+    if (typeof api.tabGroups?.query === 'function') {
+      const existing = await bounded(api.tabGroups.query(tab.windowId === undefined ? { title } : { title, windowId: tab.windowId }), signal, 'tabGroups.query');
+      if (Array.isArray(existing) && existing.length) groupId = existing[0].id;
+    }
+    groupId = await bounded(api.tabs.group(groupId === undefined ? { tabIds: [tabId] } : { tabIds: [tabId], groupId }), signal, 'tabs.group');
+    if (typeof api.tabGroups?.update === 'function') await bounded(api.tabGroups.update(groupId, { title, color: groupColor(title), collapsed: false }), signal, 'tabGroups.update');
+    return { id: groupId, title };
+  }
+
   async execute(action, raw, signal = new AbortController().signal) {
     const args = validateArgs(`chrome_${action}`, raw);
     signal.throwIfAborted();
@@ -114,12 +137,17 @@ export class BrowserController {
     }
     if (action === 'open') {
       const url = pageUrl(args.url);
+      const title = args.group.trim();
       const tab = await bounded(this.api.tabs.create({ url: 'about:blank', active: false }), signal, 'tabs.create');
+      let group;
+      let groupError;
+      try { group = await this.group(tab.id, title, signal); }
+      catch (error) { groupError = String(error.message).slice(0, 300); }
       try {
         await this.attach(tab.id, signal, true);
         const result = await this.command(tab.id, 'Page.navigate', { url }, signal);
         if (result.errorText) throw new Error(result.errorText);
-        return { tabId: tab.id, url, navigationStarted: true };
+        return { tabId: tab.id, url, navigationStarted: true, group: group ?? null, ...(groupError ? { groupError } : {}) };
       } catch (error) {
         this.attached.delete(tab.id);
         await bounded(this.api.debugger.detach({ tabId: tab.id }), undefined, 'detach', 1000).catch(() => {});

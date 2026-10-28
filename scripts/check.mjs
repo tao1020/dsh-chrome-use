@@ -12,7 +12,7 @@ const pkg = JSON.parse(await readFile('package.json', 'utf8'));
 const manifest = JSON.parse(await readFile('extension/manifest.json', 'utf8'));
 assert.equal(manifest.version, pkg.version);
 assert.equal(manifest.manifest_version, 3);
-assert.deepEqual(manifest.permissions, ['debugger', 'tabs', 'storage', 'alarms']);
+assert.deepEqual(manifest.permissions, ['debugger', 'tabs', 'tabGroups', 'storage', 'alarms']);
 assert.equal(manifest.host_permissions, undefined);
 assert.equal(manifest.content_scripts, undefined);
 assert.ok(pkg.dsh.bundle.patch);

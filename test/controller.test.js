@@ -6,12 +6,18 @@ import { TOOLS, validateArgs } from '../extension/protocol.js';
 function fixture() {
   const calls = [];
   const listeners = {};
+  const groups = [];
   const api = {
     tabs: {
       onRemoved: { addListener(fn) { listeners.removed = fn; } },
-      get: async id => ({ id, url: 'https://example.com/', title: 'Example' }),
+      get: async id => ({ id, url: 'https://example.com/', title: 'Example', windowId: 1 }),
       query: async () => [7, 8].map(id => ({ id, url: 'https://example.com/', title: 'Example' })),
-      create: async () => ({ id: 9, url: 'https://example.com/' }),
+      create: async () => ({ id: 9, url: 'https://example.com/', windowId: 1 }),
+      group: async options => { calls.push(['tabs.group', options]); return options.groupId ?? 77; },
+    },
+    tabGroups: {
+      query: async info => { calls.push(['tabGroups.query', info]); return groups; },
+      update: async (id, info) => { calls.push(['tabGroups.update', { id, ...info }]); },
     },
     debugger: {
       onDetach: { addListener(fn) { listeners.detach = fn; } },
@@ -27,17 +33,22 @@ function fixture() {
       },
     },
   };
-  return { controller: new BrowserController(api), api, calls, listeners };
+  return { controller: new BrowserController(api), api, calls, listeners, groups };
 }
 test('schemas reject unknown fields, invalid URL schemes and boundaries', () => {
   assert.equal(new Set(TOOLS.map(t => t.name)).size, TOOLS.length);
-  for (const url of ['file:///etc/passwd', 'javascript:alert(1)', 'https://user:password@example.com']) assert.throws(() => validateArgs('chrome_open', { url }));
+  for (const url of ['file:///etc/passwd', 'javascript:alert(1)', 'https://user:password@example.com']) assert.throws(() => validateArgs('chrome_open', { url, group: 'docs' }));
   assert.throws(() => pageUrl('chrome://extensions'));
   assert.throws(() => validateArgs('chrome_click', { tabId: -1, ref: 'r' }));
   assert.throws(() => validateArgs('chrome_scroll', { tabId: 1, deltaY: 3001 }));
   assert.throws(() => validateArgs('chrome_key', { tabId: 1, key: 'F12' }));
   assert.throws(() => validateArgs('chrome_tabs', { unexpected: 1 }));
   assert.doesNotThrow(() => validateArgs('chrome_fill', { tabId: 1, ref: 'r', text: '' }));
+});
+test('opening a tab requires a usable tab-group name', () => {
+  assert.throws(() => validateArgs('chrome_open', { url: 'https://example.com/' }), /MISSING_ARGUMENT: group/);
+  for (const group of ['', '   ', 'x'.repeat(41), 'bad\tname']) assert.throws(() => validateArgs('chrome_open', { url: 'https://example.com/', group }), /INVALID_ARGUMENT/);
+  assert.equal(validateArgs('chrome_open', { url: 'https://example.com/', group: 'Office 下载' }).group, 'Office 下载');
 });
 test('all ordinary tabs are available without per-tab consent; internal pages stay blocked', async () => {
   const { controller, api, calls } = fixture();
@@ -47,12 +58,33 @@ test('all ordinary tabs are available without per-tab consent; internal pages st
   api.tabs.get = async id => ({ id, url: 'chrome://settings/' });
   await assert.rejects(controller.execute('claim', { tabId: 8 }), /UNSUPPORTED_PAGE/);
 });
-test('opening a tab handles Chrome pending about:blank metadata', async () => {
+test('opening a tab handles Chrome pending about:blank metadata and joins its tab group', async () => {
   const { controller, api, calls } = fixture();
-  api.tabs.get = async id => ({ id, url: '', pendingUrl: 'about:blank' });
-  const result = await controller.execute('open', { url: 'https://example.com/' });
+  api.tabs.get = async id => ({ id, url: '', pendingUrl: 'about:blank', windowId: 1 });
+  const result = await controller.execute('open', { url: 'https://example.com/', group: 'MAS 文档' });
   assert.equal(result.tabId, 9);
+  assert.deepEqual(result.group, { id: 77, title: 'MAS 文档' });
   assert.ok(calls.some(([method]) => method === 'Page.navigate'));
+  assert.deepEqual(calls.find(([method]) => method === 'tabs.group')[1], { tabIds: [9] });
+  const update = calls.find(([method]) => method === 'tabGroups.update')[1];
+  assert.equal(update.title, 'MAS 文档');
+  assert.equal(update.collapsed, false);
+});
+test('a task series reuses the group already named after it in the same window', async () => {
+  const { controller, calls, groups } = fixture();
+  groups.push({ id: 55, title: 'MAS 文档' });
+  const result = await controller.execute('open', { url: 'https://example.com/two', group: 'MAS 文档' });
+  assert.equal(result.group.id, 55);
+  assert.deepEqual(calls.find(([method]) => method === 'tabGroups.query')[1], { title: 'MAS 文档', windowId: 1 });
+  assert.deepEqual(calls.find(([method]) => method === 'tabs.group')[1], { tabIds: [9], groupId: 55 });
+});
+test('a grouping failure keeps the new tab usable and reports why', async () => {
+  const { controller, api } = fixture();
+  api.tabs.group = async () => { throw new Error('TAB_IS_PINNED'); };
+  const result = await controller.execute('open', { url: 'https://example.com/', group: 'pinned series' });
+  assert.equal(result.tabId, 9);
+  assert.equal(result.group, null);
+  assert.match(result.groupError, /TAB_IS_PINNED/);
 });
 test('snapshot omits input values and stale references cannot click after navigation', async () => {
   const { controller, listeners, calls } = fixture();
