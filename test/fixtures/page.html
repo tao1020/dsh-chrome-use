@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>dsh-chrome-use 本机测试页</title>
+<style>body{font:18px/1.6 system-ui;max-width:720px;margin:60px auto;padding:24px;color:#24324a}input,button{font:inherit;padding:9px;margin:8px 0}label{display:block}button{cursor:pointer}output{display:block;padding:16px;background:#eaf2ff}section{margin-bottom:30px}footer{margin-top:900px}a{color:#185adb}</style></head>
+<body><h1>dsh-chrome-use 本机测试</h1><p>这是专门的测试页面，没有真实账户，也不会向外发送数据。</p>
+<section><label for="name">测试姓名</label><input id="name" autocomplete="off"><button id="greet">显示问候</button><output id="result" aria-live="polite">等待输入</output></section>
+<section><button id="error">产生测试错误</button><button id="disabled" disabled>禁用按钮</button><a href="/second">打开第二页</a></section>
+<label for="secret">测试密码</label><input id="secret" type="password" value="fixture-only-secret">
+<p id="mouse">点击事件：尚未发生</p><footer>滚动测试：页面底部</footer>
+<script>
+document.querySelector('#greet').onclick = event => {
+  document.querySelector('#result').textContent = '你好，' + document.querySelector('#name').value;
+  document.querySelector('#mouse').textContent = '点击事件：isTrusted=' + event.isTrusted;
+  console.log('bridge-test-greeting');
+};
+document.querySelector('#error').onclick = () => {
+  console.error('bridge-test-console-error');
+  fetch('/expected-error?token=do-not-record').then(r => r.text());
+  setTimeout(() => { throw new Error('bridge-test-exception'); }, 0);
+};
+</script></body></html>

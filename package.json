@@ -1,0 +1,44 @@
+{
+  "name": "dsh-chrome-use",
+  "version": "0.1.1",
+  "description": "Control Google Chrome tabs from DeepSeek Harness.",
+  "type": "module",
+  "main": "./src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src",
+    "extension",
+    "docs",
+    "cordis.patch.yml",
+    "README.md",
+    "PRIVACY.md"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "dsh": {
+    "engines": {
+      "dsh": ">=0.2.1-rc.2"
+    },
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "scripts": {
+    "test": "node --test",
+    "check": "node scripts/check.mjs",
+    "package": "node scripts/package.mjs",
+    "dev": "node scripts/dev.mjs"
+  },
+  "dependencies": {
+    "ws": "8.22.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tao1020/dsh-chrome-use.git"
+  },
+  "license": "MIT"
+}
