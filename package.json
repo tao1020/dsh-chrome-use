@@ -15,7 +15,8 @@
     "docs",
     "cordis.patch.yml",
     "README.md",
-    "PRIVACY.md"
+    "PRIVACY.md",
+    "scripts/build-client.mjs"
   ],
   "engines": {
     "node": ">=22"
@@ -50,5 +51,9 @@
     "type": "git",
     "url": "git+https://github.com/tao1020/dsh-chrome-use.git"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org"
+  }
 }
