@@ -51,6 +51,10 @@ test('opening a tab requires a usable tab-group name', () => {
   for (const group of ['', '   ', 'x'.repeat(41), 'bad\tname']) assert.throws(() => validateArgs('chrome_open', { url: 'https://example.com/', group }), /INVALID_ARGUMENT/);
   assert.equal(validateArgs('chrome_open', { url: 'https://example.com/', group: 'Office 下载' }).group, 'Office 下载');
 });
+test('free-form text keeps newlines while a tab-group name must stay single-line', () => {
+  assert.doesNotThrow(() => validateArgs('chrome_evaluate', { tabId: 1, expression: 'a\nb()' }));
+  assert.doesNotThrow(() => validateArgs('chrome_fill', { tabId: 1, ref: 'r', text: 'line one\nline two' }));
+});
 test('all ordinary tabs are available without per-tab consent; internal pages stay blocked', async () => {
   const { controller, api, calls } = fixture();
   assert.deepEqual((await controller.execute('tabs', {})).tabs.map(t => t.tabId), [7, 8]);

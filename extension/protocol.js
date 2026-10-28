@@ -40,8 +40,11 @@ export function validateArgs(name, args) {
     if (typeof value === 'string' && (!value.length || value.length > s.maxLength) && key !== 'text') throw new Error(`INVALID_ARGUMENT: ${key} length`);
     if (typeof value === 'string' && value.length > (s.maxLength ?? Infinity)) throw new Error(`INVALID_ARGUMENT: ${key} too long`);
     if (s.enum && !s.enum.includes(value)) throw new Error(`INVALID_ARGUMENT: ${key}`);
-    if (typeof value === 'string' && /\p{Cc}/u.test(value)) throw new Error(`INVALID_ARGUMENT: ${key} has control characters`);
-    if (key === 'group' && typeof value === 'string' && !value.trim()) throw new Error('INVALID_ARGUMENT: group is blank');
+    // Free-form text and expressions stay free-form; only a tab-group name must be a single line.
+    if (key === 'group' && typeof value === 'string') {
+      if (!value.trim()) throw new Error('INVALID_ARGUMENT: group is blank');
+      if (/\p{Cc}/u.test(value)) throw new Error('INVALID_ARGUMENT: group has control characters');
+    }
   }
   for (const key of spec.parameters.required) if (!(key in args)) throw new Error(`MISSING_ARGUMENT: ${key}`);
   if ('url' in args) {
