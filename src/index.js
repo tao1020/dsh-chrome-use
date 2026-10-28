@@ -1,3 +1,4 @@
+import { registerSettings } from './settings.js';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { mkdir, writeFile, copyFile } from 'node:fs/promises';
@@ -34,6 +35,7 @@ export async function apply(ctx) {
     await bridge.start();
     return () => bridge.stop();
   }, 'dsh-chrome-use');
+  registerSettings(ctx, bridge);
   for (const definition of TOOLS) {
     ctx.tools.register({
       ...definition,

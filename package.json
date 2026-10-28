@@ -6,7 +6,8 @@
   "main": "./src/index.js",
   "exports": {
     ".": "./src/index.js",
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./client": "./src/client.js"
   },
   "files": [
     "src",
@@ -25,13 +26,22 @@
     },
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-api-remotes"
+      ],
+      "platform": "web"
     }
   },
   "scripts": {
     "test": "node --test",
     "check": "node scripts/check.mjs",
     "package": "node scripts/package.mjs",
-    "dev": "node scripts/dev.mjs"
+    "dev": "node scripts/dev.mjs",
+    "build:client": "node scripts/build-client.mjs",
+    "prepack": "npm run build:client"
   },
   "dependencies": {
     "ws": "8.22.0"
