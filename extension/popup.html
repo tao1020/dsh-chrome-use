@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>dsh-chrome-use</title><link rel="stylesheet" href="popup.css"></head>
+<body>
+  <header><img class="mark" src="icon-48.png" alt=""><div><h1>dsh-chrome-use</h1><p>连接你的 Harness 与浏览器</p></div></header>
+  <main>
+    <p id="status" role="status">正在检查连接…</p>
+    <form id="pair-form">
+      <label for="code" id="pair-label">首次连接：输入 Harness 给出的配对码</label>
+      <p class="help permission">连接后，Harness 可以读取和操作此 Chrome 中的所有普通网页，包括已经登录的网站。网页内容、截图和调试信息可能发送给你配置的模型服务。</p>
+      <div class="pair-row"><input id="code" inputmode="numeric" autocomplete="off" maxlength="8" placeholder="8 位配对码"><button type="submit">连接</button></div>
+      <p class="help">只需首次配对，成功后自动重连。临时码 2 分钟内有效，已保存的配对不会定时过期。首次使用时，在 Harness 里说：“请用 chrome_pair 连接我的浏览器。”</p>
+    </form>
+    <section>
+      <p class="help">连接后，AI 自动选择网页，无需逐页授权。点击“断开连接”可以停止全部操作。</p>
+      <h2>正在调试的标签页</h2><ul id="tabs"><li>当前没有调试中的标签页</li></ul>
+    </section>
+    <button id="disconnect" class="secondary">断开连接</button>
+    <p id="error" role="alert"></p>
+  </main>
+  <footer>本机连接 · 不上传到插件作者的服务器<br><a href="https://github.com/tao1020/dsh-chrome-use" target="_blank" rel="noreferrer">帮助与源码</a></footer>
+  <script type="module" src="popup.js"></script>
+</body>
+</html>

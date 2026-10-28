@@ -1,0 +1,14 @@
+import { mkdir, readdir, copyFile, readFile, writeFile, rm } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
+const pkg = JSON.parse(await readFile('package.json', 'utf8'));
+await rm('dist/extension', { recursive: true, force: true });
+await mkdir('dist/extension', { recursive: true });
+for (const file of await readdir('extension')) await copyFile(`extension/${file}`, `dist/extension/${file}`);
+const archive = `dsh-chrome-use-${pkg.version}.zip`;
+await rm(`dist/${archive}`, { force: true });
+const result = spawnSync('zip', ['-q', '-r', `../${archive}`, '.'], { cwd: 'dist/extension', stdio: 'inherit' });
+if (result.status !== 0) throw new Error('Install the zip command to package the extension.');
+const bytes = await readFile(`dist/${archive}`);
+await writeFile(`dist/${archive}.sha256`, `${createHash('sha256').update(bytes).digest('hex')}  ${archive}\n`);
+console.log(`dist/${archive}`);
