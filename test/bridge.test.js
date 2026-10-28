@@ -108,6 +108,15 @@ test('claims are chat scoped, release does not permit another chat to act withou
   await bridge.call('release', { tabId: 7 }, 'a');
   await assert.rejects(bridge.call('snapshot', { tabId: 7 }, 'b'), /TAB_NOT_OWNED/);
 });
+test('closing a tab drops its claim', async t => {
+  const bridge = await fixture(t);
+  const { ws } = await pair(bridge);
+  respond(ws);
+  await bridge.call('claim', { tabId: 7 }, 'a');
+  assert.equal(bridge.claims.has(7), true);
+  await bridge.call('close', { tabId: 7 }, 'a');
+  assert.equal(bridge.claims.has(7), false);
+});
 test('serializes commands and timeout closes connection without replay', async t => {
   const bridge = await fixture(t, { deadlineMs: 30 });
   const { ws } = await pair(bridge);

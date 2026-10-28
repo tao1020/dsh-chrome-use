@@ -158,6 +158,13 @@ export class BrowserController {
       await this.attach(tabId, signal);
       return { tabId, attached: true };
     }
+    if (action === 'close') {
+      // Removing the tab also drops the debugger session; clean local state first
+      // so a failed remove cannot leave a claim pointing at a closed tab.
+      this.attached.delete(tabId);
+      await bounded(this.api.tabs.remove(tabId), signal, 'tabs.remove');
+      return { tabId, closed: true };
+    }
     if (!this.attached.has(tabId)) throw new Error('TAB_NOT_ATTACHED: claim the tab again');
     if (action === 'release') {
       await bounded(this.api.debugger.detach({ tabId }), signal, 'detach');

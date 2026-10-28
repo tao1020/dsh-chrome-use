@@ -181,6 +181,8 @@ export class Bridge {
       clearTimeout(timer);
       signal.removeEventListener('abort', abort);
       if (this.pending?.id === id) this.pending = undefined;
+      // A closed tab can never be acted on again, even when removal reports an error.
+      if (action === 'close') this.claims.delete(args.tabId);
     }
   }
 

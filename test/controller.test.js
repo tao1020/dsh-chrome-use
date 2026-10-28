@@ -14,6 +14,7 @@ function fixture() {
       query: async () => [7, 8].map(id => ({ id, url: 'https://example.com/', title: 'Example' })),
       create: async () => ({ id: 9, url: 'https://example.com/', windowId: 1 }),
       group: async options => { calls.push(['tabs.group', options]); return options.groupId ?? 77; },
+      remove: async id => { calls.push(['tabs.remove', id]); },
     },
     tabGroups: {
       query: async info => { calls.push(['tabGroups.query', info]); return groups; },
@@ -85,6 +86,14 @@ test('a grouping failure keeps the new tab usable and reports why', async () => 
   assert.equal(result.tabId, 9);
   assert.equal(result.group, null);
   assert.match(result.groupError, /TAB_IS_PINNED/);
+});
+test('closing a tab removes it and forgets its debugger state', async () => {
+  const { controller, calls } = fixture();
+  await controller.execute('claim', { tabId: 7 });
+  assert.equal(controller.attached.has(7), true);
+  assert.deepEqual(await controller.execute('close', { tabId: 7 }), { tabId: 7, closed: true });
+  assert.deepEqual(calls.find(([method]) => method === 'tabs.remove'), ['tabs.remove', 7]);
+  assert.equal(controller.attached.has(7), false);
 });
 test('snapshot omits input values and stale references cannot click after navigation', async () => {
   const { controller, listeners, calls } = fixture();
