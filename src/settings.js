@@ -1,4 +1,4 @@
-import { remote, parseStatus } from './settings-contract.js';
+import { remote, parseStatus, parsePairing } from './settings-contract.js';
 export function registerSettings(ctx, bridge) {
   ctx.inject(['typert'], async (scope) => {
     const { TypertRemoteService } = await import('@deepseek-ai/dsh-typert-protocol');
@@ -7,6 +7,10 @@ export function registerSettings(ctx, bridge) {
       async read() {
         const status = bridge.status();
         return parseStatus({ connected: status.connected, extensionVersion: status.extensionVersion, tabCount: status.claimedTabs.length });
+      }
+      async pair() {
+        // A live Chrome connection blocks new pairing; the browser must disconnect first.
+        return parsePairing(bridge.pair());
       }
     }
     scope.plugin(ChromeUseStatus);

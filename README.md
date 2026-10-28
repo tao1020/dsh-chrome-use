@@ -18,7 +18,7 @@
 2. 在 Harness 的插件管理中添加仓库的本地绝对路径。命令行版可在仓库内运行 `dsh plugin --profile headless add "$PWD"`；日常使用哪个 profile，就安装到哪个 profile。
 3. 在 Harness 中说：“请调用 chrome_setup，准备 dsh-chrome-use 扩展，并告诉我安装目录。”
 4. 在 Chrome 打开 `chrome://extensions/`，开启“开发者模式”，点击“加载已解压的扩展程序”，选择工具返回的目录。
-5. 让 Harness 调用 `chrome_pair`。在 Chrome 工具栏的扩展弹窗里输入 8 位配对码，点击“连接”。临时码有效期为 2 分钟；成功后保存的配对不会定时过期。
+5. 在 Harness 的设置 → dsh-chrome-use 里点击“生成配对码”，把 8 位配对码填入 Chrome 扩展弹窗并点击“连接”。也可以在对话中让 Harness 调用 `chrome_pair`，两处拿到的是同一种临时码。临时码有效期为 2 分钟；成功后保存的配对不会定时过期。
 
 以后重启 Harness、Chrome 或刷新扩展，扩展会自动尝试恢复连接。你主动点击“断开连接”后，自动重连会停止；下次配对码留空，点“连接”即可。清除配对数据或更换扩展安装目录后，需要重新配对。
 
@@ -46,7 +46,7 @@ node scripts/fixture.mjs
 ## 排查连接问题
 
 - `BRIDGE_START_FAILED`：通常是另一个 Harness profile 或调试服务占用了端口 18791。先停止重复服务。
-- `AUTH_FAILED`：在 Harness 中生成新配对码，再到扩展弹窗连接。
+- `AUTH_FAILED`：在 Harness 设置页的 dsh-chrome-use 里点“生成配对码”（或让 AI 调用 `chrome_pair`），再到扩展弹窗连接。
 - `TAB_IN_USE`：其他 Harness 会话已占用该页。让原会话释放，或新建自己的标签页。
 - Chrome 调试器冲突：关闭该页的 DevTools 或释放其他浏览器工具的会话，再检查连接。不要同时用 Codex 和 Harness 操作同一页。
 - 操作超时或取消：连接会关闭，工具不会自动重放操作。重新连接后先读取页面，确认之前的点击是否已发生。
