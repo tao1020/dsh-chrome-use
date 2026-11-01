@@ -2,13 +2,41 @@
 
 让 DeepSeek Harness 读取、操作和调试本机 Google Chrome。
 
-**安装**：[在 Chrome 应用商店安装扩展](https://chromewebstore.google.com/detail/anobmlnjdeahldefeikjdmmnckphpdhc)，再在 Harness 添加本插件，最后在扩展弹窗输入配对码。
-
 ## 安装
 
-1. **Chrome 扩展**：打开 [Chrome 应用商店](https://chromewebstore.google.com/detail/anobmlnjdeahldefeikjdmmnckphpdhc)，点击“添加至 Chrome”。以后扩展由 Chrome 自动更新，不用下载文件，也不用手动加载文件夹。
-2. **Harness 插件**：下载或克隆本仓库，在 Harness 的插件管理里添加仓库的本地绝对路径。命令行版在仓库根目录运行 `dsh plugin --profile headless add "$PWD"`；平时用哪个 profile，就装到哪个 profile。
-3. **连接**：在 Harness 设置 → dsh-chrome-use 点击“生成配对码”，再到 Chrome 工具栏打开 dsh-chrome-use 扩展，输入 8 位配对码并点击“连接”。也可以在对话里说：“请用 chrome_pair 连接浏览器。”
+> **先装 Harness 插件，再装 Chrome 扩展，最后配对。** 插件有三种装法，选一种，命令直接复制。
+
+### 1. 安装 Harness 插件
+
+**npm（推荐）**
+
+```sh
+dsh plugin --profile desktop add dsh-chrome-use
+```
+
+**GitHub 仓库**
+
+```sh
+dsh plugin --profile desktop add github:tao1020/dsh-chrome-use
+```
+
+**让 Agent 安装**：把下面这句话发给你正在用的 Agent：
+
+```text
+请安装 DSH 插件 dsh-chrome-use，仓库是 https://github.com/tao1020/dsh-chrome-use
+```
+
+> 命令里的 `desktop` 是桌面版的默认 profile；如果你用别的 profile，把它换成你的名字（例如 `web`）。桌面版也可以直接在「设置 → 插件」里安装，不用命令行。
+
+### 2. 安装 Chrome 扩展
+
+扩展在 Chrome 应用商店。点下面的链接，再点“添加至 Chrome”：
+
+**https://chromewebstore.google.com/detail/anobmlnjdeahldefeikjdmmnckphpdhc**
+
+### 3. 配对连接
+
+在 Harness 设置 → dsh-chrome-use 点“生成配对码”；在 Chrome 工具栏打开 dsh-chrome-use 扩展，输入 8 位配对码，点“连接”。也可以在对话里说：“请用 chrome_pair 连接浏览器。”
 
 需要 Google Chrome 120 或更新版本、DeepSeek Harness 0.2.1-rc.2 或更新版本。开发和测试使用 Node.js 22 或 24。
 
