@@ -98,16 +98,13 @@ function StatusPage({ read, pair }) {
         expired && h('p', { role: 'status' }, '配对码已过期，请点击“重新生成配对码”。'),
         h('p', null, '如果按钮不可用，也可以在对话中让 Harness 调用 chrome_pair，拿到的是同一种临时码。')),
     h('h3', null, '安装 Chrome 扩展'),
-    h('ol', null,
-      h('li', null, link('https://github.com/tao1020/dsh-chrome-use', '打开代码仓库'), '，点击 Code → Download ZIP，下载后解压（或直接使用已克隆仓库中的 extension 文件夹）。'),
-      h('li', null, '在 Chrome 地址栏输入 chrome://extensions，开启右上角“开发者模式”。'),
-      h('li', null, '点击“加载已解压的扩展程序”，选择解压目录里的 extension 文件夹；这一步只能由你在 Chrome 中手动完成。'),
-      h('li', null, '回到本页生成配对码，在扩展弹窗中输入并连接。首次配对成功后，重启 Harness、Chrome 或刷新扩展都会自动重连。')),
+    h('p', null, link(storeUrl, '在 Chrome 应用商店安装 dsh-chrome-use'), '，点击“添加至 Chrome”。Chrome 会自动更新商店安装的扩展，不需要下载或手动加载文件夹。'),
+    h('p', null, '装好后回到本页生成配对码，在 Chrome 工具栏打开扩展，输入配对码并点击“连接”。首次配对成功后，重启 Harness、Chrome 或扩展自动更新都会自动重连。'),
     h('h3', null, '版本更新'),
     h('button', { onClick: checkUpdates, disabled: update.loading, style: buttonStyle }, update.loading ? '正在检查…' : '检查更新'),
     h('p', { role: 'status' }, update.message || '点击后从 GitHub 查询最新正式 Release，仅发送版本查询请求。'),
-    link(releasesUrl, '下载新版 / 查看发布记录'),
-    h('p', null, 'Chrome 扩展更新：下载新版扩展 ZIP，解压并替换原 extension 文件夹，再到 chrome://extensions 点击扩展卡片上的刷新按钮。不要删除原文件夹。'),
+    link(releasesUrl, '查看发布记录'),
+    h('p', null, 'Chrome 扩展由 Chrome 应用商店自动更新，也可以在 chrome://extensions 点击扩展卡片的“更新”手动检查。'),
     h('p', null, 'Harness 插件与 Chrome 扩展分别更新。此处检查的是 Harness 插件版本；Chrome 已连接版本显示在“连接状态”。Harness 插件请通过其插件管理入口更新。'));
 }
 module.exports.inject = ['slots', 'remote'];

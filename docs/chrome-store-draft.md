@@ -1,4 +1,8 @@
-# Chrome 扩展商店材料草稿
+# Chrome 扩展商店
+
+## 商店地址
+
+https://chromewebstore.google.com/detail/anobmlnjdeahldefeikjdmmnckphpdhc
 
 ## 名称与简介
 
@@ -24,6 +28,7 @@ dsh-chrome-use 将 Google Chrome 连接到本机 DeepSeek Harness。首次配对
 |---|---|
 | `debugger` | 读取页面结构，执行浏览器输入、截图和网页调试 |
 | `tabs` | 列出和选择标签页，读取目标页标题及 URL |
+| `tabGroups` | 把 chrome_open 打开的标签页放进同名标签页组 |
 | `storage` | 保存配对令牌和自动重连状态 |
 | `alarms` | 在 Harness 重启或连接中断后尝试重连 |
 
@@ -31,12 +36,10 @@ dsh-chrome-use 将 Google Chrome 连接到本机 DeepSeek Harness。首次配对
 
 以仓库 [PRIVACY.md](../PRIVACY.md) 为准。作者没有页面数据接收服务器。工具结果会进入用户的 Harness 会话，并可能发送给用户选择的模型提供方。截图和配对数据保存在本机。
 
-调试工具可按用户要求在页面执行 JavaScript。正式提交前需要在商店的代码执行及数据披露问卷中如实说明，并根据当时的审核政策核对提交方式。
+调试工具可按用户要求在页面执行 JavaScript。商店的代码执行及数据披露问卷需要与上述内容保持一致，审核政策变化时同步复核。
 
-## 提交前仍需准备
+## 上架状态
 
-- 开发者账号和公开可访问的隐私政策地址。
-- 商店要求的扩展图标、弹窗截图和演示截图。
-- 验收后的正式版本及完整权限、数据披露问卷。
+扩展已在 Chrome 应用商店公开，用户可以直接从上面的商店地址安装，并由 Chrome 自动更新。
 
-当前只准备文案和测试包，尚未提交商店。没有准备 Edge 商店发布。
+仓库发布不会改变商店版本：仓库里的扩展版本更新后，需要把新的扩展包重新上传到商店，审核通过后用户才会收到更新。没有准备 Edge 商店版本。
