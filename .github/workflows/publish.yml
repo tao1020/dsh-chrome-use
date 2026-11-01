@@ -44,4 +44,4 @@ jobs:
           name: npm-release-package
           path: dist/*.tgz
       - name: Publish checked package
-        run: npm publish dist/dsh-chrome-use-*.tgz --access public --registry=https://registry.npmjs.org
+        run: npm publish ./dist/dsh-chrome-use-*.tgz --access public --registry=https://registry.npmjs.org
