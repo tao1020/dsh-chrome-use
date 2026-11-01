@@ -25,6 +25,13 @@ const repositoryUrl = 'https://github.com/tao1020/dsh-chrome-use';
 const storeUrl = 'https://chromewebstore.google.com/detail/anobmlnjdeahldefeikjdmmnckphpdhc';
 const releasesUrl = `${repositoryUrl}/releases`;
 
+// Section order for the settings page. A user who is not connected needs the
+// install and pairing steps before any status text; a connected user needs the
+// status first. Keeping the order in one place makes the two cases testable.
+function settingsSectionOrder(connected) {
+  return connected ? ['status', 'install', 'update'] : ['install', 'pair', 'status', 'update'];
+}
+
 function newerVersion(latest, current) {
   const parse = value => /^\d+\.\d+\.\d+$/.test(value) ? value.split('.').map(Number) : null;
   const a = parse(latest), b = parse(current);
@@ -51,7 +58,7 @@ async function checkRelease(current, fetcher = fetch) {
   } finally { clearTimeout(timer); }
 }
 
-const packageVersion = "0.1.7";
+const packageVersion = "0.1.8";
 // Wrapped by scripts/build-client.mjs for the Harness browser module loader.
 const React = require('react');
 const { createElement: h, useState, useEffect, useRef } = React;
@@ -130,36 +137,40 @@ function StatusPage({ read, pair }) {
   const remaining = pairing.expiresAt ? Math.max(0, Math.ceil((pairing.expiresAt - now) / 1000)) : 0;
   const expired = Boolean(pairing.expiresAt) && remaining === 0;
   const countdown = `${String(Math.floor(remaining / 60)).padStart(2, '0')}:${String(remaining % 60).padStart(2, '0')}`;
-  return h('section', { style: { padding: 24 }, 'aria-label': 'dsh-chrome-use' },
-    h('h2', null, 'dsh-chrome-use'),
-    h('p', null, `Harness 插件版本：${packageVersion}`),
+  const statusBlock = h('div', { key: 'status' },
     h('h3', null, '连接状态'),
     h('p', { role: 'status' }, state.loading && !value ? '正在查询 Chrome 连接…' : state.error && !value ? state.error : connected ? '已连接 Chrome' : '未连接 Chrome'),
     value && h('p', null, `扩展版本：${value.extensionVersion || '未知'} · 正在调试的标签页：${value.tabCount}`),
-    value && !connected && h('p', null, '请按下方“配对 Chrome 扩展”生成配对码，在 Chrome 工具栏的扩展弹窗中输入并点击“连接”。'),
-    h('button', { onClick: refresh, disabled: state.loading, style: buttonStyle }, state.loading ? '刷新中…' : '刷新状态'),
+    value && !connected && h('p', null, '请生成配对码，在 Chrome 工具栏的扩展弹窗中输入并点击“连接”。'),
+    connected && h('p', null, '如需重新配对，请先在扩展弹窗中点击“断开连接”，再回到这里生成新的配对码。'),
+    h('button', { onClick: refresh, disabled: state.loading, style: buttonStyle }, state.loading ? '刷新中…' : '刷新状态'));
+  const pairBlock = h('div', { key: 'pair' },
     h('h3', null, '配对 Chrome 扩展'),
-    connected
-      ? h('p', null, 'Chrome 已连接，无需配对码。如需重新配对，请先在扩展弹窗中点击“断开连接”，再回到这里生成新的配对码。')
-      : h('div', null,
-        h('p', null, '点击下面的按钮生成 8 位配对码，然后在 Chrome 工具栏打开 dsh-chrome-use 扩展，输入配对码并点击“连接”。配对码 2 分钟内有效，生成新码会让旧码立即失效。'),
-        h('button', { onClick: requestPairing, disabled: pairing.loading, style: buttonStyle }, pairing.loading ? '正在生成…' : pairing.code || expired ? '重新生成配对码' : '生成配对码'),
-        pairing.error && h('p', { role: 'alert', style: { color: 'var(--dsh-danger, #d9534f)' } }, pairing.error),
-        pairing.code && !expired && h('div', { style: { marginTop: 12 } },
-          h('code', { style: codeStyle, 'aria-label': '配对码' }, pairing.code),
-          h('p', { role: 'status' }, `剩余有效时间：${countdown}（本机端口 ${pairing.port}）`),
-          h('button', { onClick: copyCode, style: buttonStyle }, pairing.copied ? '已复制' : '复制配对码')),
-        expired && h('p', { role: 'status' }, '配对码已过期，请点击“重新生成配对码”。'),
-        h('p', null, '如果按钮不可用，也可以在对话中让 Harness 调用 chrome_pair，拿到的是同一种临时码。')),
+    h('p', null, '点击下面的按钮生成 8 位配对码，然后在 Chrome 工具栏打开 dsh-chrome-use 扩展，输入配对码并点击“连接”。配对码 2 分钟内有效，生成新码会让旧码立即失效。'),
+    h('button', { onClick: requestPairing, disabled: pairing.loading, style: buttonStyle }, pairing.loading ? '正在生成…' : pairing.code || expired ? '重新生成配对码' : '生成配对码'),
+    pairing.error && h('p', { role: 'alert', style: { color: 'var(--dsh-danger, #d9534f)' } }, pairing.error),
+    pairing.code && !expired && h('div', { style: { marginTop: 12 } },
+      h('code', { style: codeStyle, 'aria-label': '配对码' }, pairing.code),
+      h('p', { role: 'status' }, `剩余有效时间：${countdown}（本机端口 ${pairing.port}）`),
+      h('button', { onClick: copyCode, style: buttonStyle }, pairing.copied ? '已复制' : '复制配对码')),
+    expired && h('p', { role: 'status' }, '配对码已过期，请点击“重新生成配对码”。'),
+    h('p', null, '如果按钮不可用，也可以在对话中让 Harness 调用 chrome_pair，拿到的是同一种临时码。'));
+  const installBlock = h('div', { key: 'install' },
     h('h3', null, '安装 Chrome 扩展'),
     h('p', null, link(storeUrl, '在 Chrome 应用商店安装 dsh-chrome-use'), '，点击“添加至 Chrome”。Chrome 会自动更新商店安装的扩展，不需要下载或手动加载文件夹。'),
-    h('p', null, '装好后回到本页生成配对码，在 Chrome 工具栏打开扩展，输入配对码并点击“连接”。首次配对成功后，重启 Harness、Chrome 或扩展自动更新都会自动重连。'),
+    h('p', null, '装好后回到本页生成配对码，在 Chrome 工具栏打开扩展，输入配对码并点击“连接”。首次配对成功后，重启 Harness、Chrome 或扩展自动更新都会自动重连。'));
+  const updateBlock = h('div', { key: 'update' },
     h('h3', null, '版本更新'),
     h('button', { onClick: checkUpdates, disabled: update.loading, style: buttonStyle }, update.loading ? '正在检查…' : '检查更新'),
     h('p', { role: 'status' }, update.message || '点击后从 GitHub 查询最新正式 Release，仅发送版本查询请求。'),
     link(releasesUrl, '查看发布记录'),
     h('p', null, 'Chrome 扩展由 Chrome 应用商店自动更新，也可以在 chrome://extensions 点击扩展卡片的“更新”手动检查。'),
     h('p', null, 'Harness 插件与 Chrome 扩展分别更新。此处检查的是 Harness 插件版本；Chrome 已连接版本显示在“连接状态”。Harness 插件请通过其插件管理入口更新。'));
+  const blocks = { status: statusBlock, pair: pairBlock, install: installBlock, update: updateBlock };
+  return h('section', { style: { padding: 24 }, 'aria-label': 'dsh-chrome-use' },
+    h('h2', null, 'dsh-chrome-use'),
+    h('p', null, `Harness 插件版本：${packageVersion}`),
+    settingsSectionOrder(connected).map(key => blocks[key]));
 }
 module.exports.inject = ['slots', 'remote'];
 module.exports.apply = function(ctx) {
