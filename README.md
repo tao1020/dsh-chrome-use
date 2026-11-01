@@ -8,17 +8,21 @@
 
 ### 1. 安装 Harness 插件
 
-**npm（推荐）**
+三种方式任选一种，命令可以直接复制。
+
+**GitHub 仓库（推荐，始终最新）**
+
+```sh
+dsh plugin --profile desktop add github:tao1020/dsh-chrome-use
+```
+
+**npm**
 
 ```sh
 dsh plugin --profile desktop add dsh-chrome-use
 ```
 
-**GitHub 仓库**
-
-```sh
-dsh plugin --profile desktop add github:tao1020/dsh-chrome-use
-```
+> npm 镜像（例如 npmmirror）可能比官方晚同步；如果装完发现不是最新版，用上面的 GitHub 方式。
 
 **让 Agent 安装**：把下面这句话发给你正在用的 Agent：
 
