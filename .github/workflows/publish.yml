@@ -26,7 +26,11 @@ jobs:
           set -euo pipefail
           VERSION=$(node -p 'require("./package.json").version')
           test "$GITHUB_REF" = "refs/tags/release-v$VERSION"
-          git fetch origin main --tags
+          # actions/checkout rewrites the local tag ref to the commit, so fetching
+          # with --tags would try to replace it with the annotated tag object and
+          # fail with "would clobber existing tag". Fetch main without tags; the
+          # tag-to-commit check below still uses the ref checkout resolved.
+          git fetch origin main --no-tags
           test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)"
           test "$(git rev-parse "refs/tags/release-v$VERSION^{commit}")" = "$(git rev-parse HEAD)"
       - run: npm ci --ignore-scripts
