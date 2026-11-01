@@ -1,4 +1,3 @@
-export const releasesUrl = 'https://github.com/tao1020/dsh-chrome-use/releases';
 export function newerVersion(latest, current) {
   const parse = value => /^\d+\.\d+\.\d+$/.test(value) ? value.split('.').map(Number) : null;
   const a = parse(latest), b = parse(current);

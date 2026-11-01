@@ -1,10 +1,10 @@
 import { registerSettings } from './settings.js';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { mkdir, writeFile, copyFile } from 'node:fs/promises';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
-import { fileURLToPath } from 'node:url';
 import { Bridge } from './bridge.js';
+import { storeUrl } from './links.js';
 import { TOOLS, validateArgs } from '../extension/protocol.js';
 
 export const name = 'dsh-chrome-use';
@@ -18,13 +18,15 @@ export function harnessParameters(parameters) {
   })) };
 }
 
-export async function prepareExtension(stateDir) {
-  const directory = join(stateDir, 'extension');
-  await mkdir(directory, { recursive: true, mode: 0o700 });
-  for (const file of ['manifest.json', 'protocol.js', 'controller.js', 'background.js', 'popup.html', 'popup.css', 'popup.js', 'icon-16.png', 'icon-32.png', 'icon-48.png', 'icon-128.png']) {
-    await copyFile(fileURLToPath(new URL(`../extension/${file}`, import.meta.url)), join(directory, file));
-  }
-  return { extensionDirectory: directory, browserPage: 'chrome://extensions/', steps: ['Open chrome://extensions/ in Google Chrome.', 'Enable Developer mode, click Load unpacked and select extensionDirectory.', 'Ask Harness to call chrome_pair, enter the code in the extension popup, and click Connect. This enables all normal tabs.'], note: 'Chrome requires explicit installation through its UI. No extension has been installed by this preparation step. For an update, disconnect, run setup, then click Reload on the extension card.' };
+export function extensionSetup() {
+  return {
+    storeUrl,
+    steps: [
+      `Open ${storeUrl} in Google Chrome and click Add to Chrome.`,
+      'Ask Harness to call chrome_pair, enter the code in the extension popup, and click Connect. This enables all normal tabs.',
+    ],
+    note: 'Chrome updates store-installed extensions automatically, so no download or reload step is needed. For development, load the extension/ folder of this repository as an unpacked extension instead.',
+  };
 }
 
 export async function apply(ctx) {
@@ -47,7 +49,7 @@ export async function apply(ctx) {
       async execute(raw, exec) {
         const args = validateArgs(definition.name, raw);
         exec.signal.throwIfAborted();
-        if (definition.name === 'chrome_setup') return prepareExtension(stateDir);
+        if (definition.name === 'chrome_setup') return extensionSetup();
         if (definition.name === 'chrome_status') return bridge.status();
         if (definition.name === 'chrome_pair') return bridge.pair();
         const result = await bridge.call(definition.name.slice(7), args, exec.agent?.id, exec.signal);
