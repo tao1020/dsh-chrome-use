@@ -5,6 +5,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { Bridge } from './bridge.js';
 import { storeUrl } from './links.js';
+import { registerChromeUseSkill } from './skill.js';
 import { TOOLS, validateArgs } from '../extension/protocol.js';
 
 export const name = 'dsh-chrome-use';
@@ -38,6 +39,9 @@ export async function apply(ctx) {
     return () => bridge.stop();
   }, 'dsh-chrome-use');
   registerSettings(ctx, bridge);
+  // Register the bundled usage guide as a runtime skill. Compositions without
+  // the skill service still get the tools, so this stays optional.
+  ctx.inject(['skills'], (scope) => registerChromeUseSkill(scope));
   for (const definition of TOOLS) {
     ctx.tools.register({
       ...definition,
