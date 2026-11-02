@@ -1,3 +1,5 @@
+// Interaction patterns (drag, hover, select, upload, wait, dialogs) are adapted
+// from dsh-chrome-bridge (MIT, Copyright (c) 2026 OrderG-X). See THIRD_PARTY_NOTICES.md.
 import { validateArgs } from './protocol.js';
 
 export function pageUrl(value) {
@@ -15,6 +17,60 @@ export function groupColor(title) {
   let hash = 0;
   for (const char of title) hash = (hash * 31 + (char.codePointAt(0) ?? 0)) >>> 0;
   return GROUP_COLORS[hash % GROUP_COLORS.length];
+}
+
+const sleep = (ms, signal) => new Promise((resolve, reject) => {
+  if (signal?.aborted) return reject(new Error('COMMAND_CANCELED'));
+  const abort = () => { clearTimeout(timer); reject(new Error('COMMAND_CANCELED')); };
+  const timer = setTimeout(() => { signal?.removeEventListener('abort', abort); resolve(); }, ms);
+  signal?.addEventListener('abort', abort, { once: true });
+});
+
+const MODIFIERS = { alt: 1, ctrl: 2, control: 2, meta: 4, cmd: 4, command: 4, shift: 8 };
+const NAMED_KEYS = {
+  enter: ['Enter', 'Enter', 13, '\r'], tab: ['Tab', 'Tab', 9], escape: ['Escape', 'Escape', 27], esc: ['Escape', 'Escape', 27],
+  backspace: ['Backspace', 'Backspace', 8], delete: ['Delete', 'Delete', 46], space: [' ', 'Space', 32, ' '],
+  arrowup: ['ArrowUp', 'ArrowUp', 38], arrowdown: ['ArrowDown', 'ArrowDown', 40],
+  arrowleft: ['ArrowLeft', 'ArrowLeft', 37], arrowright: ['ArrowRight', 'ArrowRight', 39],
+  home: ['Home', 'Home', 36], end: ['End', 'End', 35], pageup: ['PageUp', 'PageUp', 33], pagedown: ['PageDown', 'PageDown', 34],
+};
+
+const POINT_FN = `function() {
+  if (window !== window.top) throw new Error('FRAME_UNSUPPORTED: only top-level page elements are supported');
+  if (!this.isConnected) throw new Error('STALE_ELEMENT');
+  this.scrollIntoView({block:'center', inline:'center', behavior:'instant'});
+  const r = this.getBoundingClientRect();
+  const s = getComputedStyle(this);
+  if (!r.width || !r.height || s.visibility !== 'visible' || s.display === 'none' || Number(s.opacity) === 0) throw new Error('ELEMENT_NOT_VISIBLE');
+  return {x:r.x + r.width / 2, y:r.y + r.height / 2, tag:this.tagName};
+}`;
+const VISIBLE_FN = `function() {
+  if (!this.isConnected) return false;
+  const r = this.getBoundingClientRect();
+  const s = getComputedStyle(this);
+  return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none' && Number(s.opacity) !== 0;
+}`;
+
+export function keyDescriptor(spec) {
+  const parts = String(spec).split('+').map(part => part.trim()).filter(Boolean);
+  const name = parts.pop();
+  if (!name) throw new Error('INVALID_KEY: give a key such as Enter or meta+a');
+  let modifiers = 0;
+  for (const part of parts) {
+    const modifier = MODIFIERS[part.toLowerCase()];
+    if (!modifier) throw new Error(`INVALID_KEY: unknown modifier ${part} (use alt, ctrl, meta or shift)`);
+    modifiers |= modifier;
+  }
+  const lower = name.toLowerCase();
+  let key, code, keyCode, text;
+  if (NAMED_KEYS[lower]) [key, code, keyCode, text] = NAMED_KEYS[lower];
+  else if ([...name].length === 1) {
+    key = name;
+    text = name;
+    keyCode = name.toUpperCase().charCodeAt(0);
+    code = /[a-z]/i.test(name) ? `Key${name.toUpperCase()}` : /[0-9]/.test(name) ? `Digit${name}` : '';
+  } else throw new Error(`INVALID_KEY: unknown key ${name}`);
+  return { key, code, keyCode, text: modifiers ? undefined : text, modifiers };
 }
 
 async function bounded(promise, signal, label, milliseconds = 7000) {
@@ -58,6 +114,8 @@ export class BrowserController {
   event({ tabId }, method, params) {
     const state = this.attached.get(tabId);
     if (!state) return;
+    if (method === 'Page.javascriptDialogOpening') state.dialog = { type: params.type, message: clip(params.message, 2000), defaultPrompt: clip(params.defaultPrompt, 1000) };
+    if (method === 'Page.javascriptDialogClosed') state.dialog = null;
     if (method === 'Page.frameNavigated' && !params.frame.parentId || method === 'DOM.documentUpdated') {
       state.refs.clear();
       state.revision++;
@@ -92,7 +150,7 @@ export class BrowserController {
     attachment.then(() => { if (abandoned || signal.aborted) this.api.debugger.detach({ tabId }).catch(() => {}); }, () => {});
     try { await bounded(attachment, signal, 'attach'); }
     catch (error) { abandoned = true; throw error; }
-    this.attached.set(tabId, { refs: new Map(), revision: 0, logs: [] });
+    this.attached.set(tabId, { refs: new Map(), revision: 0, logs: [], dialog: null });
     try {
       for (const domain of ['Page', 'DOM', 'Accessibility', 'Runtime', 'Network']) await this.command(tabId, `${domain}.enable`, {}, signal);
     } catch (error) {
@@ -124,6 +182,116 @@ export class BrowserController {
     groupId = await bounded(api.tabs.group(groupId === undefined ? { tabIds: [tabId] } : { tabIds: [tabId], groupId }), signal, 'tabs.group');
     if (typeof api.tabGroups?.update === 'function') await bounded(api.tabGroups.update(groupId, { title, color: groupColor(title), collapsed: false }), signal, 'tabGroups.update');
     return { id: groupId, title };
+  }
+
+  async drag(tabId, args, cdp, signal) {
+    await cdp('Page.bringToFront');
+    const marker = crypto.randomUUID().slice(0, 12);
+    const srcSelector = `[data-dsh-drag-src="${marker}"]`;
+    const dstSelector = `[data-dsh-drag-dst="${marker}"]`;
+    const hasDst = Boolean(args.toRef || args.toText);
+    if (!hasDst && (args.toX === undefined || args.toY === undefined)) throw new Error('DRAG_TARGET: give toRef, toText or toX and toY');
+    const textFinder = args.toText === undefined ? 'null' : `((text) => {
+      let best = null, area = Infinity;
+      const root = document.body;
+      if (!root) return null;
+      for (const el of root.querySelectorAll('*')) {
+        if (!(el.innerText || '').includes(text)) continue;
+        const r = el.getBoundingClientRect();
+        if (r.width < 1 || r.height < 1 || r.width * r.height >= area) continue;
+        best = el;
+        area = r.width * r.height;
+      }
+      return best;
+    })(${JSON.stringify(args.toText)})`;
+    const dstExpr = args.toRef ? `document.querySelector(${JSON.stringify(dstSelector)})` : textFinder;
+    const objectIds = [];
+    try {
+      const fromObject = await this.element(tabId, args.fromRef, signal);
+      objectIds.push(fromObject);
+      await cdp('Runtime.callFunctionOn', {
+        objectId: fromObject, returnByValue: true, arguments: [{ value: marker }],
+        functionDeclaration: `function(marker) {
+          if (window !== window.top) throw new Error('FRAME_UNSUPPORTED: only top-level page elements are supported');
+          if (!this.isConnected) throw new Error('STALE_ELEMENT');
+          this.scrollIntoView({block:'center', inline:'center', behavior:'instant'});
+          this.setAttribute('data-dsh-drag-src', marker);
+          return true;
+        }`,
+      });
+      if (args.toRef) {
+        const toObject = await this.element(tabId, args.toRef, signal);
+        objectIds.push(toObject);
+        await cdp('Runtime.callFunctionOn', {
+          objectId: toObject, returnByValue: true, arguments: [{ value: marker }],
+          functionDeclaration: `function(marker) {
+            if (!this.isConnected) throw new Error('STALE_ELEMENT');
+            this.setAttribute('data-dsh-drag-dst', marker);
+            return true;
+          }`,
+        });
+      }
+      const planExpression = `(() => {
+        const src = document.querySelector(${JSON.stringify(srcSelector)});
+        if (!src) return { error: 'DRAG_SOURCE_GONE: take a fresh snapshot' };
+        const dst = ${dstExpr};
+        if (${hasDst} && !dst) return { error: 'DRAG_TARGET_NOT_FOUND: scroll the target into view and retry' };
+        const center = (el) => { const r = el.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; };
+        src.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
+        const a = center(src);
+        const b = dst ? center(dst) : { x: ${args.toX ?? 0}, y: ${args.toY ?? 0} };
+        const inView = (p) => p.x >= 0 && p.y >= 0 && p.x <= innerWidth && p.y <= innerHeight;
+        return { a, b, native: Boolean(src.closest && src.closest('[draggable="true"]')), aIn: inView(a), bIn: inView(b) };
+      })()`;
+      const planned = await cdp('Runtime.evaluate', { expression: planExpression, returnByValue: true });
+      if (planned.exceptionDetails) throw new Error(clip(planned.exceptionDetails.exception?.description ?? 'DRAG_PLAN_FAILED'));
+      const plan = planned.result.value;
+      if (!plan || plan.error) throw new Error(plan?.error ?? 'DRAG_PLAN_FAILED');
+      if (!plan.aIn || !plan.bIn) throw new Error('DRAG_OUT_OF_VIEW: scroll so both endpoints are visible, then take a fresh snapshot');
+      if (plan.native) {
+        const nativeExpression = `(() => {
+          const node = document.querySelector(${JSON.stringify(srcSelector)});
+          const src = (node && node.closest('[draggable="true"]')) || node;
+          const dst = ${dstExpr};
+          if (!src) return { error: 'DRAG_SOURCE_GONE' };
+          const target = dst || document.elementFromPoint(${plan.b.x}, ${plan.b.y});
+          if (!target) return { error: 'DRAG_TARGET_NOT_FOUND' };
+          const transfer = new DataTransfer();
+          const fire = (el, type, point) => el.dispatchEvent(new DragEvent(type, { bubbles: true, cancelable: true, composed: true, clientX: point.x, clientY: point.y, dataTransfer: transfer }));
+          fire(src, 'dragstart', ${JSON.stringify(plan.a)});
+          fire(target, 'dragenter', ${JSON.stringify(plan.b)});
+          const accepted = !fire(target, 'dragover', ${JSON.stringify(plan.b)});
+          fire(target, 'drop', ${JSON.stringify(plan.b)});
+          fire(src, 'dragend', ${JSON.stringify(plan.b)});
+          return { accepted };
+        })()`;
+        const result = await cdp('Runtime.evaluate', { expression: nativeExpression, returnByValue: true });
+        if (result.exceptionDetails) throw new Error(clip(result.exceptionDetails.exception?.description ?? 'DRAG_FAILED'));
+        if (result.result.value?.error) throw new Error(result.result.value.error);
+        return { tabId, native: true, accepted: Boolean(result.result.value?.accepted), from: plan.a, to: plan.b };
+      }
+      await cdp('Input.dispatchMouseEvent', { type: 'mouseMoved', x: plan.a.x, y: plan.a.y, buttons: 0 });
+      await cdp('Input.dispatchMouseEvent', { type: 'mousePressed', x: plan.a.x, y: plan.a.y, button: 'left', buttons: 1, clickCount: 1 });
+      const steps = args.steps ?? 12;
+      for (let step = 1; step <= steps; step++) {
+        signal.throwIfAborted();
+        await cdp('Input.dispatchMouseEvent', {
+          type: 'mouseMoved',
+          x: plan.a.x + ((plan.b.x - plan.a.x) * step) / steps,
+          y: plan.a.y + ((plan.b.y - plan.a.y) * step) / steps,
+          button: 'left', buttons: 1,
+        });
+        await sleep(16, signal);
+      }
+      await cdp('Input.dispatchMouseEvent', { type: 'mouseReleased', x: plan.b.x, y: plan.b.y, button: 'left', buttons: 0, clickCount: 1 });
+      return { tabId, native: false, from: plan.a, to: plan.b };
+    } finally {
+      for (const objectId of objectIds) await this.command(tabId, 'Runtime.releaseObject', { objectId }, AbortSignal.timeout(1000)).catch(() => {});
+      await this.command(tabId, 'Runtime.evaluate', {
+        expression: `document.querySelectorAll('[data-dsh-drag-src="${marker}"],[data-dsh-drag-dst="${marker}"]').forEach(el => { el.removeAttribute('data-dsh-drag-src'); el.removeAttribute('data-dsh-drag-dst'); })`,
+        returnByValue: true,
+      }, AbortSignal.timeout(1000)).catch(() => {});
+    }
   }
 
   async execute(action, raw, signal = new AbortController().signal) {
@@ -199,7 +367,7 @@ export class BrowserController {
         return entry;
       });
       const tab = await bounded(this.api.tabs.get(tabId), signal, 'tabs.get');
-      return { tabId, url: clip(tab.url, 4096), title: clip(tab.title, 300), elements: entries, truncated: visible.length > 500 };
+      return { tabId, url: clip(tab.url, 4096), title: clip(tab.title, 300), dialog: state.dialog ?? null, elements: entries, truncated: visible.length > 500 };
     }
     if (action === 'click' || action === 'fill') {
       // Hidden tabs can acknowledge mouse events without delivering them to the page.
@@ -231,9 +399,12 @@ export class BrowserController {
         if (location.exceptionDetails) throw new Error(clip(location.exceptionDetails.exception?.description ?? 'ELEMENT_ERROR'));
         const position = location.result.value;
         if (action === 'fill' && (!['INPUT', 'TEXTAREA'].includes(position.tag) || position.readOnly || ['file', 'checkbox', 'radio', 'submit', 'button', 'hidden'].includes(position.type))) throw new Error('NOT_TEXT_INPUT');
-        await cdp('Input.dispatchMouseEvent', { type: 'mouseMoved', x: position.x, y: position.y });
-        await cdp('Input.dispatchMouseEvent', { type: 'mousePressed', x: position.x, y: position.y, button: 'left', clickCount: 1 });
-        await cdp('Input.dispatchMouseEvent', { type: 'mouseReleased', x: position.x, y: position.y, button: 'left', clickCount: 1 });
+        const button = action === 'fill' ? 'left' : (args.button ?? 'left');
+        const count = action === 'fill' ? 1 : (args.count ?? 1);
+        const buttons = button === 'left' ? 1 : button === 'right' ? 2 : 4;
+        await cdp('Input.dispatchMouseEvent', { type: 'mouseMoved', x: position.x, y: position.y, buttons: 0 });
+        await cdp('Input.dispatchMouseEvent', { type: 'mousePressed', x: position.x, y: position.y, button, buttons, clickCount: count });
+        await cdp('Input.dispatchMouseEvent', { type: 'mouseReleased', x: position.x, y: position.y, button, buttons: 0, clickCount: count });
         if (action === 'fill') {
           const selected = await cdp('Runtime.callFunctionOn', { objectId, returnByValue: true, functionDeclaration: 'function() { if (!this.isConnected) throw new Error("STALE_ELEMENT"); this.focus(); this.select(); return true; }' });
           if (selected.exceptionDetails) throw new Error('INPUT_SELECTION_FAILED');
@@ -243,7 +414,7 @@ export class BrowserController {
             await cdp('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Backspace', code: 'Backspace', windowsVirtualKeyCode: 8 });
           }
         }
-        return { tabId, action, completed: true };
+        return { tabId, action, button, count, completed: true };
       } finally {
         // Release remotely allocated handles even after a failed action. Detach also releases them on disconnect.
         await this.command(tabId, 'Runtime.releaseObject', { objectId }, AbortSignal.timeout(1000)).catch(() => {});
@@ -251,11 +422,131 @@ export class BrowserController {
     }
     if (action === 'key') {
       await cdp('Page.bringToFront');
-      const codes = { Enter: 13, Tab: 9, Escape: 27, Backspace: 8, ArrowLeft: 37, ArrowUp: 38, ArrowRight: 39, ArrowDown: 40 };
-      await cdp('Input.dispatchKeyEvent', { type: 'keyDown', key: args.key, code: args.key, windowsVirtualKeyCode: codes[args.key], ...(args.key === 'Enter' ? { text: '\r' } : {}) });
-      await cdp('Input.dispatchKeyEvent', { type: 'keyUp', key: args.key, code: args.key, windowsVirtualKeyCode: codes[args.key] });
-      return { completed: true };
+      const { key, code, keyCode, text, modifiers } = keyDescriptor(args.key);
+      const base = { key, code, windowsVirtualKeyCode: keyCode, nativeVirtualKeyCode: keyCode, modifiers };
+      await cdp('Input.dispatchKeyEvent', { ...base, type: text === undefined ? 'rawKeyDown' : 'keyDown', ...(text === undefined ? {} : { text, unmodifiedText: text }) });
+      await cdp('Input.dispatchKeyEvent', { ...base, type: 'keyUp' });
+      return { pressed: args.key, modifiers };
     }
+    if (action === 'hover') {
+      await cdp('Page.bringToFront');
+      let point;
+      if (args.ref) {
+        const objectId = await this.element(tabId, args.ref, signal);
+        try {
+          const located = await cdp('Runtime.callFunctionOn', { objectId, returnByValue: true, functionDeclaration: POINT_FN });
+          if (located.exceptionDetails) throw new Error(clip(located.exceptionDetails.exception?.description ?? 'ELEMENT_ERROR'));
+          point = located.result.value;
+        } finally {
+          await this.command(tabId, 'Runtime.releaseObject', { objectId }, AbortSignal.timeout(1000)).catch(() => {});
+        }
+      } else {
+        if (args.x === undefined || args.y === undefined) throw new Error('HOVER_TARGET: give ref or x and y');
+        point = { x: args.x, y: args.y };
+      }
+      await cdp('Input.dispatchMouseEvent', { type: 'mouseMoved', x: point.x, y: point.y, buttons: 0 });
+      return { tabId, x: point.x, y: point.y, hovered: true };
+    }
+    if (action === 'select') {
+      await cdp('Page.bringToFront');
+      const objectId = await this.element(tabId, args.ref, signal);
+      try {
+        const selected = await cdp('Runtime.callFunctionOn', {
+          objectId, returnByValue: true,
+          arguments: [{ value: args.value }],
+          functionDeclaration: `function(value) {
+            if (this.tagName !== 'SELECT') throw new Error('NOT_SELECT: use chrome_click for custom dropdowns');
+            const options = [...this.options];
+            const hit = options.find(option => option.value === value) || options.find(option => (option.textContent || '').trim() === value);
+            if (!hit) throw new Error('OPTION_NOT_FOUND: ' + options.slice(0, 10).map(option => option.value).join(', '));
+            const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set;
+            setter.call(this, hit.value);
+            this.dispatchEvent(new Event('input', { bubbles: true }));
+            this.dispatchEvent(new Event('change', { bubbles: true }));
+            return { value: hit.value, label: (hit.textContent || '').trim() };
+          }`,
+        });
+        if (selected.exceptionDetails) throw new Error(clip(selected.exceptionDetails.exception?.description ?? 'SELECT_FAILED'));
+        return { tabId, ...selected.result.value };
+      } finally {
+        await this.command(tabId, 'Runtime.releaseObject', { objectId }, AbortSignal.timeout(1000)).catch(() => {});
+      }
+    }
+    if (action === 'upload') {
+      const backendNodeId = this.attached.get(tabId)?.refs.get(args.ref);
+      if (!backendNodeId) throw new Error('STALE_ELEMENT: take a fresh snapshot');
+      const objectId = await this.element(tabId, args.ref, signal);
+      try {
+        const checked = await cdp('Runtime.callFunctionOn', {
+          objectId, returnByValue: true,
+          functionDeclaration: 'function() { if (this.tagName !== "INPUT" || this.type !== "file") throw new Error("NOT_FILE_INPUT"); return true; }',
+        });
+        if (checked.exceptionDetails) throw new Error(clip(checked.exceptionDetails.exception?.description ?? 'NOT_FILE_INPUT'));
+      } finally {
+        await this.command(tabId, 'Runtime.releaseObject', { objectId }, AbortSignal.timeout(1000)).catch(() => {});
+      }
+      await cdp('Page.bringToFront');
+      await cdp('DOM.setFileInputFiles', { files: [args.path], backendNodeId });
+      return { tabId, file: args.path.split(/[\\/]/).pop() };
+    }
+    if (action === 'dialog') {
+      const state = this.attached.get(tabId);
+      if (!state.dialog) throw new Error('NO_DIALOG: no alert, confirm or prompt is open');
+      const dialog = state.dialog;
+      await cdp('Page.handleJavaScriptDialog', { accept: args.accept, ...(args.promptText === undefined ? {} : { promptText: args.promptText }) });
+      state.dialog = null;
+      return { tabId, type: dialog.type, accepted: args.accept };
+    }
+    if (action === 'wait') {
+      const conditions = [args.ref, args.selector, args.text, args.urlContains].filter(value => value !== undefined);
+      if (conditions.length !== 1) throw new Error('WAIT_CONDITION: give exactly one of ref, selector, text or urlContains');
+      const timeout = args.timeoutMs ?? 5000;
+      const started = Date.now();
+      const deadline = started + timeout;
+      const gone = Boolean(args.gone);
+      let objectId;
+      try {
+        if (args.ref) {
+          try { objectId = await this.element(tabId, args.ref, signal); }
+          catch (error) {
+            if (gone && /STALE_ELEMENT/.test(error.message)) return { tabId, waitedMs: 0, gone: true };
+            throw error;
+          }
+        }
+        while (true) {
+          signal.throwIfAborted();
+          let matched;
+          if (args.urlContains) {
+            const tab = await bounded(this.api.tabs.get(tabId), signal, 'tabs.get');
+            matched = String(tab.url ?? '').includes(args.urlContains);
+          } else if (args.selector) {
+            const result = await cdp('Runtime.evaluate', {
+              returnByValue: true,
+              expression: `(() => { const el = document.querySelector(${JSON.stringify(args.selector)}); if (!el) return false; const r = el.getBoundingClientRect(); const s = getComputedStyle(el); return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none' && Number(s.opacity) !== 0; })()`,
+            });
+            matched = Boolean(result.result?.value);
+          } else if (args.text) {
+            const result = await cdp('Runtime.evaluate', {
+              returnByValue: true,
+              expression: `(() => { const body = document.body; return Boolean(body && body.innerText && body.innerText.includes(${JSON.stringify(args.text)})); })()`,
+            });
+            matched = Boolean(result.result?.value);
+          } else {
+            const result = await cdp('Runtime.callFunctionOn', { objectId, returnByValue: true, functionDeclaration: VISIBLE_FN });
+            if (result.exceptionDetails) {
+              if (!gone) throw new Error(clip(result.exceptionDetails.exception?.description ?? 'WAIT_FAILED'));
+              matched = false;
+            } else matched = Boolean(result.result.value);
+          }
+          if (matched !== gone) return { tabId, waitedMs: Date.now() - started, gone };
+          if (Date.now() >= deadline) throw new Error(`WAIT_TIMEOUT: ${timeout}ms`);
+          await sleep(Math.min(250, deadline - Date.now()), signal);
+        }
+      } finally {
+        if (objectId) await this.command(tabId, 'Runtime.releaseObject', { objectId }, AbortSignal.timeout(1000)).catch(() => {});
+      }
+    }
+    if (action === 'drag') return this.drag(tabId, args, cdp, signal);
     if (action === 'scroll') {
       await cdp('Page.bringToFront');
       await cdp('Input.dispatchMouseEvent', { type: 'mouseWheel', x: 100, y: 100, deltaX: 0, deltaY: args.deltaY });

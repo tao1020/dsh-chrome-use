@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { BrowserController, pageUrl } from '../extension/controller.js';
+import { BrowserController, keyDescriptor, pageUrl } from '../extension/controller.js';
 import { TOOLS, validateArgs } from '../extension/protocol.js';
 
-function fixture() {
+function fixture(overrides = {}) {
   const calls = [];
   const listeners = {};
   const groups = [];
@@ -27,9 +27,14 @@ function fixture() {
       detach: async target => { calls.push(['detach', target]); listeners.detach(target); },
       sendCommand: async (target, method, params) => {
         calls.push([method, params]);
+        if (overrides[method]) return overrides[method](params);
         if (method === 'Accessibility.getFullAXTree') return { nodes: [{ role: { value: 'button' }, name: { value: 'Go' }, backendDOMNodeId: 42 }, { role: { value: 'textbox' }, name: { value: 'Password' }, value: { value: 'secret' }, backendDOMNodeId: 43 }] };
         if (method === 'DOM.resolveNode') return { object: { objectId: 'object' } };
-        if (method === 'Runtime.callFunctionOn') return { result: { value: params.functionDeclaration.includes('getBoundingClientRect') ? { x: 20, y: 30, tag: 'INPUT', type: 'text' } : true } };
+        if (method === 'Runtime.callFunctionOn') {
+          if (params.functionDeclaration.includes('HTMLSelectElement')) return { result: { value: { value: 'b', label: 'B' } } };
+          return { result: { value: params.functionDeclaration.includes('getBoundingClientRect') ? { x: 20, y: 30, tag: 'INPUT', type: 'text' } : true } };
+        }
+        if (method === 'Runtime.evaluate') return { result: { value: true } };
         return {};
       },
     },
@@ -42,9 +47,16 @@ test('schemas reject unknown fields, invalid URL schemes and boundaries', () => 
   assert.throws(() => pageUrl('chrome://extensions'));
   assert.throws(() => validateArgs('chrome_click', { tabId: -1, ref: 'r' }));
   assert.throws(() => validateArgs('chrome_scroll', { tabId: 1, deltaY: 3001 }));
-  assert.throws(() => validateArgs('chrome_key', { tabId: 1, key: 'F12' }));
+  assert.doesNotThrow(() => validateArgs('chrome_key', { tabId: 1, key: 'meta+a' }));
+  assert.throws(() => keyDescriptor('F12'), /INVALID_KEY/);
   assert.throws(() => validateArgs('chrome_tabs', { unexpected: 1 }));
   assert.doesNotThrow(() => validateArgs('chrome_fill', { tabId: 1, ref: 'r', text: '' }));
+  assert.doesNotThrow(() => validateArgs('chrome_upload', { tabId: 1, ref: 'r', path: '/tmp/a.txt' }));
+  assert.throws(() => validateArgs('chrome_upload', { tabId: 1, ref: 'r' }), /MISSING_ARGUMENT/);
+  assert.throws(() => validateArgs('chrome_dialog', { tabId: 1, accept: 'yes' }), /INVALID_ARGUMENT/);
+  assert.doesNotThrow(() => validateArgs('chrome_dialog', { tabId: 1, accept: false, promptText: '' }));
+  assert.doesNotThrow(() => validateArgs('chrome_wait', { tabId: 1, selector: '#ready', gone: true, timeoutMs: 12000 }));
+  assert.doesNotThrow(() => validateArgs('chrome_drag', { tabId: 1, fromRef: 'r1', toText: 'Drop here', steps: 20 }));
 });
 test('opening a tab requires a usable tab-group name', () => {
   assert.throws(() => validateArgs('chrome_open', { url: 'https://example.com/' }), /MISSING_ARGUMENT: group/);
@@ -119,6 +131,94 @@ test('fill uses real input events, supports clearing and releases handles', asyn
   assert.ok(calls.some(([method, params]) => method === 'Input.dispatchKeyEvent' && params.key === 'Backspace'));
   assert.equal(calls.filter(([method]) => method === 'Runtime.releaseObject').length, 2);
 });
+test('click forwards the requested button and click count', async () => {
+  const { controller, calls } = fixture();
+  await controller.execute('claim', { tabId: 7 });
+  const snapshot = await controller.execute('snapshot', { tabId: 7 });
+  await controller.execute('click', { tabId: 7, ref: snapshot.elements[0].ref, button: 'right', count: 2 });
+  const pressed = calls.find(([method, params]) => method === 'Input.dispatchMouseEvent' && params.type === 'mousePressed')[1];
+  assert.equal(pressed.button, 'right');
+  assert.equal(pressed.buttons, 2);
+  assert.equal(pressed.clickCount, 2);
+});
+
+test('hover moves the pointer without pressing a button', async () => {
+  const { controller, calls } = fixture();
+  await controller.execute('claim', { tabId: 7 });
+  const snapshot = await controller.execute('snapshot', { tabId: 7 });
+  const result = await controller.execute('hover', { tabId: 7, ref: snapshot.elements[0].ref });
+  assert.deepEqual([result.x, result.y], [20, 30]);
+  const mouse = calls.filter(([method]) => method === 'Input.dispatchMouseEvent').map(([, params]) => params.type);
+  assert.deepEqual(mouse, ['mouseMoved']);
+});
+
+test('select sets the option through the page and reports its label', async () => {
+  const { controller } = fixture();
+  await controller.execute('claim', { tabId: 7 });
+  const snapshot = await controller.execute('snapshot', { tabId: 7 });
+  const result = await controller.execute('select', { tabId: 7, ref: snapshot.elements[0].ref, value: 'b' });
+  assert.deepEqual(result, { tabId: 7, value: 'b', label: 'B' });
+});
+
+test('key combinations use modifiers and named keys keep their text', async () => {
+  const { controller, calls } = fixture();
+  await controller.execute('claim', { tabId: 7 });
+  await controller.execute('key', { tabId: 7, key: 'meta+a' });
+  let down = calls.filter(([method, params]) => method === 'Input.dispatchKeyEvent' && params.type === 'rawKeyDown').at(-1)[1];
+  assert.equal(down.key, 'a');
+  assert.equal(down.modifiers, 4);
+  assert.equal(down.windowsVirtualKeyCode, 65);
+  calls.length = 0;
+  await controller.execute('key', { tabId: 7, key: 'Enter' });
+  down = calls.find(([method, params]) => method === 'Input.dispatchKeyEvent' && params.type === 'keyDown')[1];
+  assert.equal(down.text, '\r');
+});
+
+test('a pending dialog is reported in the snapshot and can be accepted', async () => {
+  const { controller, calls, listeners } = fixture();
+  await controller.execute('claim', { tabId: 7 });
+  listeners.event({ tabId: 7 }, 'Page.javascriptDialogOpening', { type: 'confirm', message: 'Sure?' });
+  const snapshot = await controller.execute('snapshot', { tabId: 7 });
+  assert.deepEqual(snapshot.dialog, { type: 'confirm', message: 'Sure?', defaultPrompt: '' });
+  const result = await controller.execute('dialog', { tabId: 7, accept: true });
+  assert.equal(result.accepted, true);
+  assert.ok(calls.some(([method, params]) => method === 'Page.handleJavaScriptDialog' && params.accept === true));
+  assert.equal((await controller.execute('snapshot', { tabId: 7 })).dialog, null);
+});
+
+test('wait requires exactly one condition and returns as soon as it is visible', async () => {
+  const { controller } = fixture();
+  await controller.execute('claim', { tabId: 7 });
+  await assert.rejects(controller.execute('wait', { tabId: 7 }), /WAIT_CONDITION/);
+  await assert.rejects(controller.execute('wait', { tabId: 7, selector: '#ready', text: 'Ready' }), /WAIT_CONDITION/);
+  const result = await controller.execute('wait', { tabId: 7, selector: '#ready', timeoutMs: 1000 });
+  assert.equal(result.gone, false);
+  assert.ok(result.waitedMs >= 0);
+});
+
+test('upload sends the checked file paths to the file input', async () => {
+  const { controller, calls } = fixture();
+  await controller.execute('claim', { tabId: 7 });
+  const snapshot = await controller.execute('snapshot', { tabId: 7 });
+  const result = await controller.execute('upload', { tabId: 7, ref: snapshot.elements[0].ref, path: '/tmp/report.txt' });
+  assert.equal(result.file, 'report.txt');
+  const call = calls.find(([method]) => method === 'DOM.setFileInputFiles');
+  assert.deepEqual(call[1], { files: ['/tmp/report.txt'], backendNodeId: 42 });
+});
+
+test('drag sends a full press-move-release sequence for mouse drags', async () => {
+  const plan = { a: { x: 10, y: 20 }, b: { x: 110, y: 220 }, native: false, aIn: true, bIn: true };
+  const { controller, calls } = fixture({
+    'Runtime.evaluate': params => params.expression.includes('aIn') ? { result: { value: plan } } : { result: { value: true } },
+  });
+  await controller.execute('claim', { tabId: 7 });
+  const snapshot = await controller.execute('snapshot', { tabId: 7 });
+  await controller.execute('drag', { tabId: 7, fromRef: snapshot.elements[0].ref, toX: 110, toY: 220, steps: 3 });
+  const mouse = calls.filter(([method]) => method === 'Input.dispatchMouseEvent').map(([, params]) => params.type);
+  assert.deepEqual(mouse, ['mouseMoved', 'mousePressed', 'mouseMoved', 'mouseMoved', 'mouseMoved', 'mouseReleased']);
+  assert.equal(calls.find(([method, params]) => method === 'Input.dispatchMouseEvent' && params.type === 'mouseReleased')[1].x, 110);
+});
+
 test('input activates background tabs; activation failure never dispatches input', async () => {
   const { controller, calls, api } = fixture();
   await controller.execute('claim', { tabId: 7 });
