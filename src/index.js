@@ -84,8 +84,27 @@ export async function apply(ctx) {
         if (definition.name === 'chrome_setup') return extensionSetup();
         if (definition.name === 'chrome_status') return bridge.status();
         if (definition.name === 'chrome_pair') return bridge.pair();
-        if (definition.name === 'chrome_upload') args.path = (await validateUploadPaths([args.path]))[0];
+        if (definition.name === 'chrome_upload') {
+          if (args.path && args.paths) throw new Error('UPLOAD_TARGET: give path or paths, not both');
+          const files = args.paths ?? (args.path ? [args.path] : []);
+          if (!files.length) throw new Error('UPLOAD_TARGET: give path or paths');
+          args.paths = await validateUploadPaths(files);
+          delete args.path;
+        }
         const result = await bridge.call(definition.name.slice(7), args, exec.agent?.id, exec.signal);
+        if (definition.name === 'chrome_pdf') {
+          const data = result.data;
+          if (typeof data !== 'string' || !/^[A-Za-z0-9+/]*={0,2}$/.test(data)) throw new Error('INVALID_PDF');
+          if (data.length > 7 * 1024 * 1024) throw new Error('PDF_TOO_LARGE: the encoded PDF exceeds the bridge limit; print a smaller page');
+          const bytes = Buffer.from(data, 'base64');
+          if (bytes.toString('base64') !== data || !bytes.subarray(0, 5).equals(Buffer.from('%PDF-'))) throw new Error('INVALID_PDF');
+          exec.signal.throwIfAborted();
+          const directory = join(stateDir, 'exports');
+          await mkdir(directory, { recursive: true, mode: 0o700 });
+          const path = join(directory, `${randomUUID()}.pdf`);
+          await writeFile(path, bytes, { mode: 0o600, flag: 'wx' });
+          return { path, mimeType: 'application/pdf', bytes: bytes.length, note: 'PDF saved locally. Files remain until you remove them.' };
+        }
         if (definition.name !== 'chrome_screenshot') return result;
         const data = result.data;
         if (typeof data !== 'string' || !/^[A-Za-z0-9+/]*={0,2}$/.test(data)) throw new Error('INVALID_SCREENSHOT');
