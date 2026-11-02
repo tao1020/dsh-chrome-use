@@ -114,6 +114,7 @@ export class BrowserController {
   event({ tabId }, method, params) {
     const state = this.attached.get(tabId);
     if (!state) return;
+    if (method.startsWith('Network.')) state.lastNetworkActivity = Date.now();
     if (method === 'Page.loadEventFired' && state.loadResolve) { const resolve = state.loadResolve; state.loadResolve = null; resolve(true); }
     if (method === 'Page.javascriptDialogOpening') state.dialog = { type: params.type, message: clip(params.message, 2000), defaultPrompt: clip(params.defaultPrompt, 1000) };
     if (method === 'Page.javascriptDialogClosed') state.dialog = null;
@@ -151,7 +152,7 @@ export class BrowserController {
     attachment.then(() => { if (abandoned || signal.aborted) this.api.debugger.detach({ tabId }).catch(() => {}); }, () => {});
     try { await bounded(attachment, signal, 'attach'); }
     catch (error) { abandoned = true; throw error; }
-    this.attached.set(tabId, { refs: new Map(), revision: 0, logs: [], dialog: null, loadResolve: null });
+    this.attached.set(tabId, { refs: new Map(), revision: 0, logs: [], dialog: null, loadResolve: null, lastNetworkActivity: Date.now() });
     try {
       for (const domain of ['Page', 'DOM', 'Accessibility', 'Runtime', 'Network']) await this.command(tabId, `${domain}.enable`, {}, signal);
     } catch (error) {
@@ -512,6 +513,9 @@ export class BrowserController {
       }
     }
     if (action === 'upload') {
+      const files = args.paths ?? (args.path ? [args.path] : []);
+      if (!files.length) throw new Error('UPLOAD_TARGET: give path or paths');
+      if (args.path && args.paths) throw new Error('UPLOAD_TARGET: give path or paths, not both');
       const backendNodeId = this.attached.get(tabId)?.refs.get(args.ref);
       if (!backendNodeId) throw new Error('STALE_ELEMENT: take a fresh snapshot');
       const objectId = await this.element(tabId, args.ref, signal);
@@ -525,8 +529,8 @@ export class BrowserController {
         await this.command(tabId, 'Runtime.releaseObject', { objectId }, AbortSignal.timeout(1000)).catch(() => {});
       }
       await cdp('Page.bringToFront');
-      await cdp('DOM.setFileInputFiles', { files: [args.path], backendNodeId });
-      return { tabId, file: args.path.split(/[\\/]/).pop() };
+      await cdp('DOM.setFileInputFiles', { files, backendNodeId });
+      return { tabId, files: files.map(file => file.split(/[\\/]/).pop()) };
     }
     if (action === 'dialog') {
       const state = this.attached.get(tabId);
@@ -537,8 +541,8 @@ export class BrowserController {
       return { tabId, type: dialog.type, accepted: args.accept };
     }
     if (action === 'wait') {
-      const conditions = [args.ref, args.selector, args.text, args.urlContains].filter(value => value !== undefined);
-      if (conditions.length !== 1) throw new Error('WAIT_CONDITION: give exactly one of ref, selector, text or urlContains');
+      const conditions = [args.ref, args.selector, args.text, args.urlContains, args.networkIdle ? 'network' : undefined].filter(value => value !== undefined);
+      if (conditions.length !== 1) throw new Error('WAIT_CONDITION: give exactly one of ref, selector, text, urlContains or networkIdle');
       const timeout = args.timeoutMs ?? 5000;
       const started = Date.now();
       const deadline = started + timeout;
@@ -570,6 +574,9 @@ export class BrowserController {
               expression: `(() => { const body = document.body; return Boolean(body && body.innerText && body.innerText.includes(${JSON.stringify(args.text)})); })()`,
             });
             matched = Boolean(result.result?.value);
+          } else if (args.networkIdle) {
+            const state = this.attached.get(tabId);
+            matched = Date.now() - (state?.lastNetworkActivity ?? 0) >= 500;
           } else {
             const result = await cdp('Runtime.callFunctionOn', { objectId, returnByValue: true, functionDeclaration: VISIBLE_FN });
             if (result.exceptionDetails) {
@@ -663,6 +670,15 @@ export class BrowserController {
         return cdp('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true, clip: { x: rect.x, y: rect.y, width: rect.width, height: rect.height, scale: 1 } });
       }
       return cdp('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
+    }
+    if (action === 'pdf') {
+      const result = await cdp('Page.printToPDF', {
+        printBackground: args.printBackground ?? true,
+        landscape: args.landscape ?? false,
+        ...(args.paperWidth === undefined ? {} : { paperWidth: args.paperWidth }),
+        ...(args.paperHeight === undefined ? {} : { paperHeight: args.paperHeight }),
+      });
+      return { data: result.data };
     }
     if (action === 'evaluate') {
       const result = await cdp('Runtime.evaluate', { expression: args.expression, returnByValue: true, awaitPromise: false, timeout: 5000 });

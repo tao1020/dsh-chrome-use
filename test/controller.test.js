@@ -55,7 +55,8 @@ test('schemas reject unknown fields, invalid URL schemes and boundaries', () => 
   assert.throws(() => validateArgs('chrome_tabs', { unexpected: 1 }));
   assert.doesNotThrow(() => validateArgs('chrome_fill', { tabId: 1, ref: 'r', text: '' }));
   assert.doesNotThrow(() => validateArgs('chrome_upload', { tabId: 1, ref: 'r', path: '/tmp/a.txt' }));
-  assert.throws(() => validateArgs('chrome_upload', { tabId: 1, ref: 'r' }), /MISSING_ARGUMENT/);
+  assert.doesNotThrow(() => validateArgs('chrome_upload', { tabId: 1, ref: 'r', paths: ['/tmp/a.txt', '/tmp/b.txt'] }));
+  assert.throws(() => validateArgs('chrome_upload', { tabId: 1, ref: 'r', paths: '/tmp/a.txt' }), /INVALID_ARGUMENT/);
   assert.throws(() => validateArgs('chrome_dialog', { tabId: 1, accept: 'yes' }), /INVALID_ARGUMENT/);
   assert.doesNotThrow(() => validateArgs('chrome_dialog', { tabId: 1, accept: false, promptText: '' }));
   assert.doesNotThrow(() => validateArgs('chrome_wait', { tabId: 1, selector: '#ready', gone: true, timeoutMs: 12000 }));
@@ -65,6 +66,7 @@ test('schemas reject unknown fields, invalid URL schemes and boundaries', () => 
   assert.doesNotThrow(() => validateArgs('chrome_scroll_to', { tabId: 1, ref: 'r' }));
   assert.throws(() => validateArgs('chrome_scroll_to', { tabId: 1, ref: 'r', block: 'top' }), /INVALID_ARGUMENT/);
   assert.doesNotThrow(() => validateArgs('chrome_screenshot', { tabId: 1, fullPage: true }));
+  assert.doesNotThrow(() => validateArgs('chrome_pdf', { tabId: 1, landscape: true }));
   assert.doesNotThrow(() => validateArgs('chrome_activate', { tabId: 1 }));
 });
 test('opening a tab requires a usable tab-group name', () => {
@@ -210,9 +212,36 @@ test('upload sends the checked file paths to the file input', async () => {
   await controller.execute('claim', { tabId: 7 });
   const snapshot = await controller.execute('snapshot', { tabId: 7 });
   const result = await controller.execute('upload', { tabId: 7, ref: snapshot.elements[0].ref, path: '/tmp/report.txt' });
-  assert.equal(result.file, 'report.txt');
+  assert.deepEqual(result.files, ['report.txt']);
   const call = calls.find(([method]) => method === 'DOM.setFileInputFiles');
   assert.deepEqual(call[1], { files: ['/tmp/report.txt'], backendNodeId: 42 });
+
+  const multiple = await controller.execute('upload', { tabId: 7, ref: snapshot.elements[0].ref, paths: ['/tmp/a.txt', '/tmp/b.txt'] });
+  assert.deepEqual(multiple.files, ['a.txt', 'b.txt']);
+  assert.deepEqual(calls.filter(([method]) => method === 'DOM.setFileInputFiles').at(-1)[1].files, ['/tmp/a.txt', '/tmp/b.txt']);
+  await assert.rejects(controller.execute('upload', { tabId: 7, ref: snapshot.elements[0].ref }), /UPLOAD_TARGET/);
+  await assert.rejects(controller.execute('upload', { tabId: 7, ref: snapshot.elements[0].ref, path: '/tmp/a.txt', paths: ['/tmp/b.txt'] }), /UPLOAD_TARGET/);
+});
+
+test('wait can pause until the network has been quiet for 500 ms', async () => {
+  const { controller } = fixture();
+  await controller.execute('claim', { tabId: 7 });
+  const started = Date.now();
+  const result = await controller.execute('wait', { tabId: 7, networkIdle: true, timeoutMs: 2000 });
+  assert.equal(result.gone, false);
+  assert.ok(Date.now() - started >= 450);
+});
+
+test('pdf prints the page with background and orientation options', async () => {
+  const { controller, calls } = fixture({ 'Page.printToPDF': () => ({ data: 'JVBERi0xLjQK' }) });
+  await controller.execute('claim', { tabId: 7 });
+  const result = await controller.execute('pdf', { tabId: 7, landscape: true, paperWidth: 11 });
+  assert.equal(result.data, 'JVBERi0xLjQK');
+  const call = calls.find(([method]) => method === 'Page.printToPDF')[1];
+  assert.equal(call.printBackground, true);
+  assert.equal(call.landscape, true);
+  assert.equal(call.paperWidth, 11);
+  assert.equal(call.paperHeight, undefined);
 });
 
 test('drag sends a full press-move-release sequence for mouse drags', async () => {
