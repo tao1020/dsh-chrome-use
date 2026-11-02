@@ -115,6 +115,8 @@ export class BrowserController {
     const state = this.attached.get(tabId);
     if (!state) return;
     if (method.startsWith('Network.')) state.lastNetworkActivity = Date.now();
+    if (method === 'Network.requestWillBeSent') { state.networkRequests.set(params.requestId, params.request?.url ?? ''); state.networkInFlight = state.networkRequests.size; }
+    if (method === 'Network.loadingFinished' || method === 'Network.loadingFailed') { state.networkRequests.delete(params.requestId); state.networkInFlight = state.networkRequests.size; }
     if (method === 'Page.loadEventFired' && state.loadResolve) { const resolve = state.loadResolve; state.loadResolve = null; resolve(true); }
     if (method === 'Page.javascriptDialogOpening') state.dialog = { type: params.type, message: clip(params.message, 2000), defaultPrompt: clip(params.defaultPrompt, 1000) };
     if (method === 'Page.javascriptDialogClosed') state.dialog = null;
@@ -152,7 +154,7 @@ export class BrowserController {
     attachment.then(() => { if (abandoned || signal.aborted) this.api.debugger.detach({ tabId }).catch(() => {}); }, () => {});
     try { await bounded(attachment, signal, 'attach'); }
     catch (error) { abandoned = true; throw error; }
-    this.attached.set(tabId, { refs: new Map(), revision: 0, logs: [], dialog: null, loadResolve: null, lastNetworkActivity: Date.now() });
+    this.attached.set(tabId, { refs: new Map(), revision: 0, logs: [], dialog: null, loadResolve: null, lastNetworkActivity: Date.now(), networkInFlight: 0, networkRequests: new Map() });
     try {
       for (const domain of ['Page', 'DOM', 'Accessibility', 'Runtime', 'Network']) await this.command(tabId, `${domain}.enable`, {}, signal);
     } catch (error) {
@@ -388,11 +390,15 @@ export class BrowserController {
     if (action === 'snapshot') {
       const state = this.attached.get(tabId);
       state.refs.clear();
+      if (state.dialog) {
+        const tab = await bounded(this.api.tabs.get(tabId), signal, 'tabs.get');
+        return { tabId, url: clip(tab.url, 4096), title: clip(tab.title, 300), dialog: state.dialog, elements: [], truncated: false };
+      }
       const revision = state.revision;
       const { nodes } = await cdp('Accessibility.getFullAXTree');
       if (state.revision !== revision) throw new Error('PAGE_CHANGED: take a fresh snapshot');
       const prefix = crypto.randomUUID().slice(0, 8);
-      const visible = nodes.filter(node => !node.ignored && !['none', 'generic', 'InlineTextBox'].includes(node.role?.value));
+      const visible = nodes.filter(node => !node.ignored && !['none', 'generic', 'InlineTextBox', 'StaticText'].includes(node.role?.value));
       const entries = visible.slice(0, 500).map((node, index) => {
         const entry = { role: clip(node.role?.value, 80), name: clip(node.name?.value, 1000) };
         if (node.backendDOMNodeId) {
@@ -442,9 +448,26 @@ export class BrowserController {
         const button = action === 'fill' ? 'left' : (args.button ?? 'left');
         const count = action === 'fill' ? 1 : (args.count ?? 1);
         const buttons = button === 'left' ? 1 : button === 'right' ? 2 : 4;
-        await cdp('Input.dispatchMouseEvent', { type: 'mouseMoved', x: position.x, y: position.y, buttons: 0 });
-        await cdp('Input.dispatchMouseEvent', { type: 'mousePressed', x: position.x, y: position.y, button, buttons, clickCount: count });
-        await cdp('Input.dispatchMouseEvent', { type: 'mouseReleased', x: position.x, y: position.y, button, buttons: 0, clickCount: count });
+        const state = this.attached.get(tabId);
+        const dispatched = Promise.all([
+          cdp('Input.dispatchMouseEvent', { type: 'mouseMoved', x: position.x, y: position.y, buttons: 0 }),
+          cdp('Input.dispatchMouseEvent', { type: 'mousePressed', x: position.x, y: position.y, button, buttons, clickCount: count }),
+          cdp('Input.dispatchMouseEvent', { type: 'mouseReleased', x: position.x, y: position.y, button, buttons: 0, clickCount: count }),
+        ]);
+        // A click that opens alert/confirm/prompt blocks the renderer, so the
+        // mouse command may never acknowledge. The dialog event still arrives;
+        // return control to the caller so chrome_dialog can dismiss it.
+        dispatched.catch(() => {});
+        const opened = (async () => {
+          const end = Date.now() + 2500;
+          while (Date.now() < end) {
+            if (state.dialog) return true;
+            await sleep(25);
+          }
+          return false;
+        })();
+        if (await Promise.race([dispatched.then(() => false), opened])) return { tabId, action, button, count, completed: true, dialog: state.dialog ?? null };
+        await dispatched;
         if (action === 'fill') {
           const selected = await cdp('Runtime.callFunctionOn', { objectId, returnByValue: true, functionDeclaration: 'function() { if (!this.isConnected) throw new Error("STALE_ELEMENT"); this.focus(); this.select(); return true; }' });
           if (selected.exceptionDetails) throw new Error('INPUT_SELECTION_FAILED');
@@ -576,7 +599,7 @@ export class BrowserController {
             matched = Boolean(result.result?.value);
           } else if (args.networkIdle) {
             const state = this.attached.get(tabId);
-            matched = Date.now() - (state?.lastNetworkActivity ?? 0) >= 500;
+            matched = (state?.networkInFlight ?? 0) === 0 && Date.now() - (state?.lastNetworkActivity ?? 0) >= 500;
           } else {
             const result = await cdp('Runtime.callFunctionOn', { objectId, returnByValue: true, functionDeclaration: VISIBLE_FN });
             if (result.exceptionDetails) {
@@ -585,7 +608,7 @@ export class BrowserController {
             } else matched = Boolean(result.result.value);
           }
           if (matched !== gone) return { tabId, waitedMs: Date.now() - started, gone };
-          if (Date.now() >= deadline) throw new Error(`WAIT_TIMEOUT: ${timeout}ms`);
+          if (Date.now() >= deadline) { const st = this.attached.get(tabId); throw new Error(`WAIT_TIMEOUT: ${timeout}ms (inFlight=${st?.networkInFlight}, quiet=${Date.now() - (st?.lastNetworkActivity ?? 0)}, urls=${[...(st?.networkRequests?.values() ?? [])].join(',')})`); }
           await sleep(Math.min(250, deadline - Date.now()), signal);
         }
       } finally {

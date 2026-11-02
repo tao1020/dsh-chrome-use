@@ -30,7 +30,7 @@ function fixture(overrides = {}) {
       sendCommand: async (target, method, params) => {
         calls.push([method, params]);
         if (overrides[method]) return overrides[method](params);
-        if (method === 'Accessibility.getFullAXTree') return { nodes: [{ role: { value: 'button' }, name: { value: 'Go' }, backendDOMNodeId: 42 }, { role: { value: 'textbox' }, name: { value: 'Password' }, value: { value: 'secret' }, backendDOMNodeId: 43 }] };
+        if (method === 'Accessibility.getFullAXTree') return { nodes: [{ role: { value: 'button' }, name: { value: 'Go' }, backendDOMNodeId: 42 }, { role: { value: 'textbox' }, name: { value: 'Password' }, value: { value: 'secret' }, backendDOMNodeId: 43 }, { role: { value: 'StaticText' }, name: { value: 'Go label' }, backendDOMNodeId: 44 }] };
         if (method === 'DOM.resolveNode') return { object: { objectId: 'object' } };
         if (method === 'Runtime.callFunctionOn') {
           if (params.functionDeclaration.includes('HTMLSelectElement')) return { result: { value: { value: 'b', label: 'B' } } };
@@ -412,4 +412,44 @@ test('click hit-testing accepts the shadow host that renders the target', async 
   await controller.execute('click', { tabId: 7, ref: snapshot.elements[0].ref });
   const locate = calls.find(([method, params]) => method === 'Runtime.callFunctionOn' && params.functionDeclaration.includes('ELEMENT_OBSCURED_OR_IN_FRAME'));
   assert.match(locate[1].functionDeclaration, /getRootNode/);
+});
+
+test('snapshot skips static text nodes that cannot be scrolled or clicked', async () => {
+  const { controller } = fixture();
+  await controller.execute('claim', { tabId: 7 });
+  const snapshot = await controller.execute('snapshot', { tabId: 7 });
+  assert.deepEqual(snapshot.elements.map(e => e.name), ['Go', 'Password']);
+  assert.ok(snapshot.elements.every(e => e.ref));
+});
+
+test('click returns once a page dialog opens, even if the mouse command is still blocked', async () => {
+  const { controller, api, listeners } = fixture();
+  await controller.execute('claim', { tabId: 7 });
+  const original = api.debugger.sendCommand;
+  api.debugger.sendCommand = async (target, method, params) => {
+    if (method === 'Input.dispatchMouseEvent' && params.type === 'mouseReleased') {
+      setTimeout(() => listeners.event({ tabId: 7 }, 'Page.javascriptDialogOpening', { type: 'alert', message: 'blocked' }), 20);
+      return new Promise(() => {}); // A real renderer blocks until the dialog is handled.
+    }
+    return original(target, method, params);
+  };
+  const snapshot = await controller.execute('snapshot', { tabId: 7 });
+  const result = await controller.execute('click', { tabId: 7, ref: snapshot.elements[0].ref });
+  assert.equal(result.completed, true);
+  assert.equal(result.dialog.type, 'alert');
+  const during = await controller.execute('snapshot', { tabId: 7 });
+  assert.equal(during.dialog.message, 'blocked');
+  assert.deepEqual(during.elements, []);
+  await controller.execute('dialog', { tabId: 7, accept: true });
+});
+
+test('networkIdle waits for in-flight requests instead of relying on a quiet gap', async () => {
+  const { controller, listeners } = fixture();
+  await controller.execute('claim', { tabId: 7 });
+  listeners.event({ tabId: 7 }, 'Network.requestWillBeSent', { requestId: 'r1', request: { url: 'https://example.com/slow' } });
+  await assert.rejects(controller.execute('wait', { tabId: 7, networkIdle: true, timeoutMs: 700 }), /WAIT_TIMEOUT: 700ms \(inFlight=1/);
+  listeners.event({ tabId: 7 }, 'Network.loadingFinished', { requestId: 'r1' });
+  const quiet = await controller.execute('wait', { tabId: 7, networkIdle: true, timeoutMs: 2000 });
+  assert.equal(quiet.gone, false);
+  assert.ok(quiet.waitedMs >= 450);
 });
