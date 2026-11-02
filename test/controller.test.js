@@ -14,8 +14,10 @@ function fixture(overrides = {}) {
       query: async () => [7, 8].map(id => ({ id, url: 'https://example.com/', title: 'Example' })),
       create: async () => ({ id: 9, url: 'https://example.com/', windowId: 1 }),
       group: async options => { calls.push(['tabs.group', options]); return options.groupId ?? 77; },
+      update: async (id, info) => { calls.push(['tabs.update', { id, ...info }]); return { id, ...info }; },
       remove: async id => { calls.push(['tabs.remove', id]); },
     },
+    windows: { update: async (id, info) => { calls.push(['windows.update', { id, ...info }]); return { id, ...info }; } },
     tabGroups: {
       query: async info => { calls.push(['tabGroups.query', info]); return groups; },
       update: async (id, info) => { calls.push(['tabGroups.update', { id, ...info }]); },
@@ -32,6 +34,7 @@ function fixture(overrides = {}) {
         if (method === 'DOM.resolveNode') return { object: { objectId: 'object' } };
         if (method === 'Runtime.callFunctionOn') {
           if (params.functionDeclaration.includes('HTMLSelectElement')) return { result: { value: { value: 'b', label: 'B' } } };
+          if (params.functionDeclaration.includes('window.scrollX')) return { result: { value: { x: 10, y: 20, top: 120, left: 30, width: 100, height: 50, pageHeight: 3000 } } };
           return { result: { value: params.functionDeclaration.includes('getBoundingClientRect') ? { x: 20, y: 30, tag: 'INPUT', type: 'text' } : true } };
         }
         if (method === 'Runtime.evaluate') return { result: { value: true } };
@@ -57,6 +60,12 @@ test('schemas reject unknown fields, invalid URL schemes and boundaries', () => 
   assert.doesNotThrow(() => validateArgs('chrome_dialog', { tabId: 1, accept: false, promptText: '' }));
   assert.doesNotThrow(() => validateArgs('chrome_wait', { tabId: 1, selector: '#ready', gone: true, timeoutMs: 12000 }));
   assert.doesNotThrow(() => validateArgs('chrome_drag', { tabId: 1, fromRef: 'r1', toText: 'Drop here', steps: 20 }));
+  assert.doesNotThrow(() => validateArgs('chrome_history', { tabId: 1, action: 'back' }));
+  assert.throws(() => validateArgs('chrome_history', { tabId: 1, action: 'undo' }), /INVALID_ARGUMENT/);
+  assert.doesNotThrow(() => validateArgs('chrome_scroll_to', { tabId: 1, ref: 'r' }));
+  assert.throws(() => validateArgs('chrome_scroll_to', { tabId: 1, ref: 'r', block: 'top' }), /INVALID_ARGUMENT/);
+  assert.doesNotThrow(() => validateArgs('chrome_screenshot', { tabId: 1, fullPage: true }));
+  assert.doesNotThrow(() => validateArgs('chrome_activate', { tabId: 1 }));
 });
 test('opening a tab requires a usable tab-group name', () => {
   assert.throws(() => validateArgs('chrome_open', { url: 'https://example.com/' }), /MISSING_ARGUMENT: group/);
@@ -283,4 +292,95 @@ test('an attachment that completes after its timeout is detached', async t => {
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(controller.attached.size, 0);
   assert.ok(calls.some(([method]) => method === 'detach'));
+});
+
+
+test('activate brings the tab forward and focuses its window', async () => {
+  const { controller, calls } = fixture();
+  await controller.execute('claim', { tabId: 7 });
+  const result = await controller.execute('activate', { tabId: 7 });
+  assert.deepEqual(result, { tabId: 7, active: true, windowId: 1, windowFocused: true });
+  assert.deepEqual(calls.find(([method]) => method === 'tabs.update'), ['tabs.update', { id: 7, active: true }]);
+  assert.deepEqual(calls.find(([method]) => method === 'windows.update'), ['windows.update', { id: 1, focused: true }]);
+});
+
+test('scroll_to aligns a ref or selector and reports the final position', async () => {
+  const { controller, calls } = fixture();
+  await controller.execute('claim', { tabId: 7 });
+  const snapshot = await controller.execute('snapshot', { tabId: 7 });
+  const byRef = await controller.execute('scroll_to', { tabId: 7, ref: snapshot.elements[0].ref, block: 'end' });
+  assert.equal(byRef.top, 120);
+  assert.equal(byRef.pageHeight, 3000);
+  const scrollCall = calls.find(([method, params]) => method === 'Runtime.callFunctionOn' && params.functionDeclaration.includes('scrollIntoView'));
+  assert.equal(scrollCall[1].arguments[0].value, 'end');
+  await assert.rejects(controller.execute('scroll_to', { tabId: 7 }), /SCROLL_TARGET/);
+  await assert.rejects(controller.execute('scroll_to', { tabId: 7, ref: 'r', selector: 'main' }), /SCROLL_TARGET/);
+});
+
+test('scroll_to accepts a selector without needing a snapshot ref', async () => {
+  const { controller, calls } = fixture({
+    'Runtime.evaluate': () => ({ result: { value: { x: 0, y: 400, top: 500, left: 0, width: 20, height: 10, pageHeight: 2000 } } }),
+  });
+  await controller.execute('claim', { tabId: 7 });
+  const result = await controller.execute('scroll_to', { tabId: 7, selector: '#target', block: 'start' });
+  assert.equal(result.y, 400);
+  const expression = calls.find(([method]) => method === 'Runtime.evaluate')[1].expression;
+  assert.match(expression, /"start"|'start'/);
+  assert.match(expression, /#target/);
+});
+
+test('history goes back and forward by entry id and waits for the load event', async () => {
+  const history = { currentIndex: 1, entries: [{ id: 10 }, { id: 11 }, { id: 12 }] };
+  const { controller, calls, listeners } = fixture({ 'Page.getNavigationHistory': () => history });
+  await controller.execute('claim', { tabId: 7 });
+  const back = controller.execute('history', { tabId: 7, action: 'back' });
+  await new Promise(resolve => setTimeout(resolve, 20));
+  listeners.event({ tabId: 7 }, 'Page.loadEventFired', {});
+  assert.equal((await back).loaded, true);
+  assert.equal(calls.find(([method]) => method === 'Page.navigateToHistoryEntry')[1].entryId, 10);
+
+  history.currentIndex = 0;
+  await assert.rejects(controller.execute('history', { tabId: 7, action: 'back' }), /NO_BACK_HISTORY/);
+  history.currentIndex = 2;
+  await assert.rejects(controller.execute('history', { tabId: 7, action: 'forward' }), /NO_FORWARD_HISTORY/);
+});
+
+test('reload waits for load and reports the refreshed tab', async () => {
+  const { controller, calls, listeners } = fixture();
+  await controller.execute('claim', { tabId: 7 });
+  const reload = controller.execute('history', { tabId: 7, action: 'reload' });
+  await new Promise(resolve => setTimeout(resolve, 20));
+  listeners.event({ tabId: 7 }, 'Page.loadEventFired', {});
+  const result = await reload;
+  assert.equal(result.action, 'reload');
+  assert.equal(result.loaded, true);
+  assert.ok(calls.some(([method]) => method === 'Page.reload'));
+});
+
+test('screenshot captures the full page or one element with a page clip', async () => {
+  const { controller, calls } = fixture({
+    'Page.getLayoutMetrics': () => ({ cssContentSize: { width: 1200, height: 3000 } }),
+    'Page.captureScreenshot': () => ({ data: 'png' }),
+  });
+  await controller.execute('claim', { tabId: 7 });
+  await controller.execute('screenshot', { tabId: 7, fullPage: true });
+  let shot = calls.filter(([method]) => method === 'Page.captureScreenshot').at(-1)[1];
+  assert.deepEqual(shot.clip, { x: 0, y: 0, width: 1200, height: 3000, scale: 1 });
+  assert.equal(shot.captureBeyondViewport, true);
+
+  const snapshot = await controller.execute('snapshot', { tabId: 7 });
+  await controller.execute('screenshot', { tabId: 7, ref: snapshot.elements[0].ref });
+  shot = calls.filter(([method]) => method === 'Page.captureScreenshot').at(-1)[1];
+  assert.deepEqual(shot.clip, { x: 10, y: 20, width: 100, height: 50, scale: 1 });
+
+  await assert.rejects(controller.execute('screenshot', { tabId: 7, fullPage: true, ref: 'r' }), /SCREENSHOT_TARGET/);
+});
+
+test('click hit-testing accepts the shadow host that renders the target', async () => {
+  const { controller, calls } = fixture();
+  await controller.execute('claim', { tabId: 7 });
+  const snapshot = await controller.execute('snapshot', { tabId: 7 });
+  await controller.execute('click', { tabId: 7, ref: snapshot.elements[0].ref });
+  const locate = calls.find(([method, params]) => method === 'Runtime.callFunctionOn' && params.functionDeclaration.includes('ELEMENT_OBSCURED_OR_IN_FRAME'));
+  assert.match(locate[1].functionDeclaration, /getRootNode/);
 });
