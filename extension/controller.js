@@ -114,6 +114,7 @@ export class BrowserController {
   event({ tabId }, method, params) {
     const state = this.attached.get(tabId);
     if (!state) return;
+    if (method === 'Page.loadEventFired' && state.loadResolve) { const resolve = state.loadResolve; state.loadResolve = null; resolve(true); }
     if (method === 'Page.javascriptDialogOpening') state.dialog = { type: params.type, message: clip(params.message, 2000), defaultPrompt: clip(params.defaultPrompt, 1000) };
     if (method === 'Page.javascriptDialogClosed') state.dialog = null;
     if (method === 'Page.frameNavigated' && !params.frame.parentId || method === 'DOM.documentUpdated') {
@@ -150,7 +151,7 @@ export class BrowserController {
     attachment.then(() => { if (abandoned || signal.aborted) this.api.debugger.detach({ tabId }).catch(() => {}); }, () => {});
     try { await bounded(attachment, signal, 'attach'); }
     catch (error) { abandoned = true; throw error; }
-    this.attached.set(tabId, { refs: new Map(), revision: 0, logs: [], dialog: null });
+    this.attached.set(tabId, { refs: new Map(), revision: 0, logs: [], dialog: null, loadResolve: null });
     try {
       for (const domain of ['Page', 'DOM', 'Accessibility', 'Runtime', 'Network']) await this.command(tabId, `${domain}.enable`, {}, signal);
     } catch (error) {
@@ -294,6 +295,15 @@ export class BrowserController {
     }
   }
 
+  async waitForLoad(state, signal, milliseconds = 5000) {
+    let resolveLoad;
+    const loaded = new Promise(resolve => { resolveLoad = resolve; state.loadResolve = resolve; });
+    let timer;
+    const timedOut = new Promise(resolve => { timer = setTimeout(() => resolve(false), milliseconds); });
+    try { return await Promise.race([loaded, timedOut]); }
+    finally { clearTimeout(timer); if (state.loadResolve === resolveLoad) state.loadResolve = null; }
+  }
+
   async execute(action, raw, signal = new AbortController().signal) {
     const args = validateArgs(`chrome_${action}`, raw);
     signal.throwIfAborted();
@@ -339,13 +349,40 @@ export class BrowserController {
       this.attached.delete(tabId);
       return { tabId, released: true };
     }
-    pageUrl((await bounded(this.api.tabs.get(tabId), signal, 'tabs.get')).url);
+    const tabInfo = await bounded(this.api.tabs.get(tabId), signal, 'tabs.get');
+    pageUrl(tabInfo.url);
     signal.throwIfAborted();
+    if (action === 'activate') {
+      await bounded(this.api.tabs.update(tabId, { active: true }), signal, 'tabs.update');
+      let windowFocused = false;
+      if (tabInfo.windowId !== undefined && typeof this.api.windows?.update === 'function') {
+        try { await bounded(this.api.windows.update(tabInfo.windowId, { focused: true }), signal, 'windows.update'); windowFocused = true; }
+        catch { /* The tab is already active; a denied window focus must not fail the call. */ }
+      }
+      return { tabId, active: true, windowId: tabInfo.windowId ?? null, windowFocused };
+    }
     if (action === 'navigate') {
       this.attached.get(tabId).refs.clear();
       const result = await cdp('Page.navigate', { url: pageUrl(args.url) });
       if (result.errorText) throw new Error(`NAVIGATION_FAILED: ${result.errorText}`);
       return { tabId, navigationStarted: true, note: 'Loading may still be in progress. Take a fresh snapshot to inspect the result.' };
+    }
+    if (action === 'history') {
+      const state = this.attached.get(tabId);
+      state.refs.clear();
+      const { currentIndex, entries } = await cdp('Page.getNavigationHistory');
+      if (args.action === 'reload') {
+        const loaded = this.waitForLoad(state, signal);
+        await cdp('Page.reload', { ignoreCache: false });
+        return { tabId, action: 'reload', loaded: await loaded, note: 'Take a fresh snapshot; references from before the reload are stale.' };
+      }
+      const targetIndex = args.action === 'back' ? currentIndex - 1 : currentIndex + 1;
+      const target = entries?.[targetIndex];
+      if (!target) throw new Error(args.action === 'back' ? 'NO_BACK_HISTORY: this tab has no earlier page' : 'NO_FORWARD_HISTORY: this tab has no later page');
+      const loaded = this.waitForLoad(state, signal);
+      await cdp('Page.navigateToHistoryEntry', { entryId: target.id });
+      const tab = await bounded(this.api.tabs.get(tabId), signal, 'tabs.get');
+      return { tabId, action: args.action, url: clip(tab.url, 4096), title: clip(tab.title, 300), loaded: await loaded, note: 'Take a fresh snapshot; references from before the navigation are stale.' };
     }
     if (action === 'snapshot') {
       const state = this.attached.get(tabId);
@@ -386,7 +423,9 @@ export class BrowserController {
             if (!r.width || !r.height || s.visibility !== 'visible' || s.display === 'none' || Number(s.opacity) === 0) throw new Error('ELEMENT_NOT_VISIBLE');
             const x = r.x + r.width / 2, y = r.y + r.height / 2;
             const hit = document.elementFromPoint(x, y);
-            if (!hit || !(hit === this || this.contains(hit))) throw new Error('ELEMENT_OBSCURED_OR_IN_FRAME');
+            const host = this.getRootNode && this.getRootNode().host;
+            const reachable = hit && (hit === this || this.contains(hit) || (host && (hit === host || host.contains(hit))));
+            if (!reachable) throw new Error('ELEMENT_OBSCURED_OR_IN_FRAME');
             const marker = document.createElement('div');
             marker.setAttribute('aria-hidden', 'true');
             marker.textContent = '➤';
@@ -547,12 +586,84 @@ export class BrowserController {
       }
     }
     if (action === 'drag') return this.drag(tabId, args, cdp, signal);
+    if (action === 'scroll_to') {
+      if (Boolean(args.ref) === Boolean(args.selector)) throw new Error('SCROLL_TARGET: give exactly one of ref or selector');
+      await cdp('Page.bringToFront');
+      const block = args.block ?? 'center';
+      const positionFn = `function(block) {
+        if (!this.isConnected) throw new Error('STALE_ELEMENT');
+        this.scrollIntoView({block, inline:'nearest', behavior:'instant'});
+        const r = this.getBoundingClientRect();
+        return {x: window.scrollX, y: window.scrollY, top: r.top + window.scrollY, left: r.left + window.scrollX, width: r.width, height: r.height, pageHeight: Math.max(document.documentElement.scrollHeight, document.body ? document.body.scrollHeight : 0)};
+      }`;
+      if (args.ref) {
+        const objectId = await this.element(tabId, args.ref, signal);
+        try {
+          const result = await cdp('Runtime.callFunctionOn', { objectId, returnByValue: true, arguments: [{ value: block }], functionDeclaration: positionFn });
+          if (result.exceptionDetails) throw new Error(clip(result.exceptionDetails.exception?.description ?? 'SCROLL_FAILED'));
+          return { tabId, ...result.result.value };
+        } finally {
+          await this.command(tabId, 'Runtime.releaseObject', { objectId }, AbortSignal.timeout(1000)).catch(() => {});
+        }
+      }
+      const result = await cdp('Runtime.evaluate', {
+        returnByValue: true,
+        expression: `(() => { const el = document.querySelector(${JSON.stringify(args.selector)}); if (!el) return { error: 'SELECTOR_NOT_FOUND' }; el.scrollIntoView({block: ${JSON.stringify(block)}, inline: 'nearest', behavior: 'instant'}); const r = el.getBoundingClientRect(); return {x: window.scrollX, y: window.scrollY, top: r.top + window.scrollY, left: r.left + window.scrollX, width: r.width, height: r.height, pageHeight: Math.max(document.documentElement.scrollHeight, document.body ? document.body.scrollHeight : 0)}; })()`,
+      });
+      if (result.exceptionDetails) throw new Error(clip(result.exceptionDetails.exception?.description ?? 'SCROLL_FAILED'));
+      if (result.result?.value?.error) throw new Error(`${result.result.value.error}: ${args.selector}`);
+      return { tabId, ...result.result.value };
+    }
     if (action === 'scroll') {
       await cdp('Page.bringToFront');
       await cdp('Input.dispatchMouseEvent', { type: 'mouseWheel', x: 100, y: 100, deltaX: 0, deltaY: args.deltaY });
       return { completed: true };
     }
-    if (action === 'screenshot') return cdp('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
+    if (action === 'screenshot') {
+      if (args.fullPage && (args.ref || args.selector)) throw new Error('SCREENSHOT_TARGET: fullPage cannot be combined with ref or selector');
+      if (args.ref && args.selector) throw new Error('SCREENSHOT_TARGET: give only one of ref or selector');
+      if (args.fullPage) {
+        const metrics = await cdp('Page.getLayoutMetrics');
+        const size = metrics.cssContentSize ?? metrics.contentSize;
+        const width = Math.ceil(size?.width ?? 0), height = Math.ceil(size?.height ?? 0);
+        if (!width || !height) throw new Error('SCREENSHOT_EMPTY: the page has no layout size');
+        if (width > 8000 || height > 20000) throw new Error(`SCREENSHOT_TOO_LARGE: ${width}x${height}`);
+        return cdp('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true, clip: { x: 0, y: 0, width, height, scale: 1 } });
+      }
+      if (args.ref || args.selector) {
+        let rect;
+        if (args.ref) {
+          const objectId = await this.element(tabId, args.ref, signal);
+          try {
+            const result = await cdp('Runtime.callFunctionOn', {
+              objectId, returnByValue: true,
+              functionDeclaration: `function() {
+                if (!this.isConnected) throw new Error('STALE_ELEMENT');
+                this.scrollIntoView({block:'center', inline:'center', behavior:'instant'});
+                const r = this.getBoundingClientRect();
+                return {x: r.left + window.scrollX, y: r.top + window.scrollY, width: r.width, height: r.height};
+              }`,
+            });
+            if (result.exceptionDetails) throw new Error(clip(result.exceptionDetails.exception?.description ?? 'SCREENSHOT_FAILED'));
+            rect = result.result.value;
+          } finally {
+            await this.command(tabId, 'Runtime.releaseObject', { objectId }, AbortSignal.timeout(1000)).catch(() => {});
+          }
+        } else {
+          const result = await cdp('Runtime.evaluate', {
+            returnByValue: true,
+            expression: `(() => { const el = document.querySelector(${JSON.stringify(args.selector)}); if (!el) return { error: 'SELECTOR_NOT_FOUND' }; el.scrollIntoView({block:'center', inline:'center', behavior:'instant'}); const r = el.getBoundingClientRect(); return {x: r.left + window.scrollX, y: r.top + window.scrollY, width: r.width, height: r.height}; })()`,
+          });
+          if (result.exceptionDetails) throw new Error(clip(result.exceptionDetails.exception?.description ?? 'SCREENSHOT_FAILED'));
+          if (result.result?.value?.error) throw new Error(`${result.result.value.error}: ${args.selector}`);
+          rect = result.result.value;
+        }
+        if (!rect.width || !rect.height) throw new Error('SCREENSHOT_EMPTY: the element has no visible size');
+        if (rect.width > 8000 || rect.height > 20000) throw new Error(`SCREENSHOT_TOO_LARGE: ${rect.width}x${rect.height}`);
+        return cdp('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true, clip: { x: rect.x, y: rect.y, width: rect.width, height: rect.height, scale: 1 } });
+      }
+      return cdp('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
+    }
     if (action === 'evaluate') {
       const result = await cdp('Runtime.evaluate', { expression: args.expression, returnByValue: true, awaitPromise: false, timeout: 5000 });
       if (result.exceptionDetails) throw new Error(`JAVASCRIPT_ERROR: ${clip(result.exceptionDetails.exception?.description ?? result.exceptionDetails.text, 4000)}`);

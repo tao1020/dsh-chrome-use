@@ -88,7 +88,8 @@ export async function apply(ctx) {
         const result = await bridge.call(definition.name.slice(7), args, exec.agent?.id, exec.signal);
         if (definition.name !== 'chrome_screenshot') return result;
         const data = result.data;
-        if (typeof data !== 'string' || data.length > 7 * 1024 * 1024 || !/^[A-Za-z0-9+/]*={0,2}$/.test(data)) throw new Error('INVALID_SCREENSHOT');
+        if (typeof data !== 'string' || !/^[A-Za-z0-9+/]*={0,2}$/.test(data)) throw new Error('INVALID_SCREENSHOT');
+        if (data.length > 7 * 1024 * 1024) throw new Error('SCREENSHOT_TOO_LARGE: the encoded image exceeds the bridge limit; capture a smaller element or viewport');
         const bytes = Buffer.from(data, 'base64');
         if (bytes.toString('base64') !== data || !bytes.subarray(0, 8).equals(Buffer.from([137,80,78,71,13,10,26,10]))) throw new Error('INVALID_SCREENSHOT');
         exec.signal.throwIfAborted();
@@ -96,7 +97,8 @@ export async function apply(ctx) {
         await mkdir(directory, { recursive: true, mode: 0o700 });
         const path = join(directory, `${randomUUID()}.png`);
         await writeFile(path, bytes, { mode: 0o600, flag: 'wx' });
-        return { path, mimeType: 'image/png', bytes: bytes.length, note: 'Viewport screenshot saved locally. Use a compatible image-reading tool to view it. Files remain until you remove them.' };
+        const kind = args.fullPage ? 'full page' : args.ref || args.selector ? 'element' : 'viewport';
+        return { path, mimeType: 'image/png', bytes: bytes.length, kind, note: `${kind} screenshot saved locally. Use a compatible image-reading tool to view it. Files remain until you remove them.` };
       },
     });
   }
