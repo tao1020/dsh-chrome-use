@@ -5,6 +5,8 @@ const pkg = JSON.parse(await readFile('package.json', 'utf8'));
 await rm('dist/extension', { recursive: true, force: true });
 await mkdir('dist/extension', { recursive: true });
 for (const file of await readdir('extension')) await copyFile(`extension/${file}`, `dist/extension/${file}`);
+// The extension zip is a distributed copy, so carry the licence notices with it.
+for (const file of ['LICENSE', 'THIRD_PARTY_NOTICES.md']) await copyFile(file, `dist/extension/${file}`);
 const archive = `dsh-chrome-use-${pkg.version}.zip`;
 await rm(`dist/${archive}`, { force: true });
 const result = spawnSync('zip', ['-q', '-r', `../${archive}`, '.'], { cwd: 'dist/extension', stdio: 'inherit' });

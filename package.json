@@ -1,6 +1,6 @@
 {
   "name": "dsh-chrome-use",
-  "version": "0.1.13",
+  "version": "0.2.0",
   "description": "Control Google Chrome tabs from DeepSeek Harness.",
   "type": "module",
   "main": "./src/index.js",
@@ -16,6 +16,7 @@
     "cordis.patch.yml",
     "README.md",
     "PRIVACY.md",
+    "THIRD_PARTY_NOTICES.md",
     "scripts/build-client.mjs"
   ],
   "engines": {

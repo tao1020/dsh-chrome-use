@@ -1,7 +1,7 @@
 import { registerSettings } from './settings.js';
-import { homedir } from 'node:os';
-import { join } from 'node:path';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { homedir, tmpdir } from 'node:os';
+import { isAbsolute, join, sep } from 'node:path';
+import { mkdir, realpath, stat, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { Bridge } from './bridge.js';
 import { storeUrl } from './links.js';
@@ -14,8 +14,8 @@ export const inject = ['tools'];
 // DSH accepts a JSON Schema subset. Keep full bounds in the shared validator.
 export function harnessParameters(parameters) {
   return { ...parameters, properties: Object.fromEntries(Object.entries(parameters.properties).map(([key, value]) => {
-    const { minimum, maximum, maxLength, ...supported } = value;
-    return [key, supported];
+    const { minimum, maximum, maxLength, allowEmpty, minItems, maxItems, items, ...supported } = value;
+    return [key, items ? { ...supported, items: { type: items.type ?? 'string' } } : supported];
   })) };
 }
 
@@ -28,6 +28,34 @@ export function extensionSetup() {
     ],
     note: 'Chrome updates store-installed extensions automatically, so no download or reload step is needed. For development, load the extension/ folder of this repository as an unpacked extension instead.',
   };
+}
+
+const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
+const uploadRoots = async () => Promise.all([homedir(), tmpdir(), '/tmp', '/private/tmp'].map(async root => {
+  try { return await realpath(root); } catch { return root; }
+}));
+const inside = (root, path) => path === root || path.startsWith(root + sep);
+
+// chrome_upload is the one tool that turns a model-chosen string into a local
+// file read. Keep it to ordinary files under the user's home or temp roots and
+// refuse hidden paths, so a page cannot talk the model into ~/.ssh or ~/.dsh.
+export async function validateUploadPaths(paths) {
+  const roots = await uploadRoots();
+  const checked = [];
+  for (const raw of paths) {
+    const parts = String(raw).split(/[\\/]/);
+    if (!isAbsolute(raw)) throw new Error(`UPLOAD_PATH_NOT_ABSOLUTE: ${raw}`);
+    if (parts.includes('..') || parts.some(part => part.startsWith('.'))) throw new Error(`UPLOAD_PATH_HIDDEN: ${raw}`);
+    if (/\p{Cc}/u.test(raw)) throw new Error(`UPLOAD_PATH_INVALID: ${raw}`);
+    let real;
+    try { real = await realpath(raw); } catch { throw new Error(`UPLOAD_FILE_NOT_FOUND: ${raw}`); }
+    const info = await stat(real);
+    if (!info.isFile()) throw new Error(`UPLOAD_NOT_A_FILE: ${raw}`);
+    if (info.size > MAX_UPLOAD_BYTES) throw new Error(`UPLOAD_FILE_TOO_LARGE: ${raw}`);
+    if (!roots.some(root => inside(root, real))) throw new Error(`UPLOAD_PATH_OUTSIDE_HOME_OR_TEMP: ${raw}`);
+    checked.push(real);
+  }
+  return checked;
 }
 
 export async function apply(ctx) {
@@ -56,6 +84,7 @@ export async function apply(ctx) {
         if (definition.name === 'chrome_setup') return extensionSetup();
         if (definition.name === 'chrome_status') return bridge.status();
         if (definition.name === 'chrome_pair') return bridge.pair();
+        if (definition.name === 'chrome_upload') args.path = (await validateUploadPaths([args.path]))[0];
         const result = await bridge.call(definition.name.slice(7), args, exec.agent?.id, exec.signal);
         if (definition.name !== 'chrome_screenshot') return result;
         const data = result.data;
