@@ -10,7 +10,13 @@
 
 三种方式任选一种，命令可以直接复制。
 
-**GitHub 仓库（推荐，始终最新）**
+**让 Agent 安装（推荐）**：把下面这句话发给你正在用的 Agent：
+
+```text
+请安装 DSH 插件 dsh-chrome-use，仓库是 https://github.com/tao1020/dsh-chrome-use
+```
+
+**GitHub 仓库（始终最新）**
 
 ```sh
 dsh plugin --profile desktop add github:tao1020/dsh-chrome-use
@@ -23,12 +29,6 @@ dsh plugin --profile desktop add dsh-chrome-use
 ```
 
 > npm 镜像（例如 npmmirror）可能比官方晚同步；如果装完发现不是最新版，用上面的 GitHub 方式。
-
-**让 Agent 安装**：把下面这句话发给你正在用的 Agent：
-
-```text
-请安装 DSH 插件 dsh-chrome-use，仓库是 https://github.com/tao1020/dsh-chrome-use
-```
 
 > 命令里的 `desktop` 是桌面版的默认 profile；如果你用别的 profile，把它换成你的名字（例如 `web`）。桌面版也可以直接在「设置 → 插件」里安装，不用命令行。
 
