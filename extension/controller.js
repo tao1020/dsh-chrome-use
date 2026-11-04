@@ -1,6 +1,7 @@
 // Interaction patterns (drag, hover, select, upload, wait, dialogs) are adapted
 // from dsh-chrome-bridge (MIT, Copyright (c) 2026 OrderG-X). See THIRD_PARTY_NOTICES.md.
 import { validateArgs } from './protocol.js';
+import { MARKDOWN_FN, TEXT_EXPRESSION } from './page-content.js';
 
 export function pageUrl(value) {
   const url = new URL(value);
@@ -115,7 +116,26 @@ export class BrowserController {
     const state = this.attached.get(tabId);
     if (!state) return;
     if (method.startsWith('Network.')) state.lastNetworkActivity = Date.now();
-    if (method === 'Network.requestWillBeSent') { state.networkRequests.set(params.requestId, params.request?.url ?? ''); state.networkInFlight = state.networkRequests.size; }
+    if (method === 'Network.requestWillBeSent') {
+      state.networkRequests.set(params.requestId, params.request?.url ?? '');
+      state.networkInFlight = state.networkRequests.size;
+      // A redirect reuses the requestId, so update the existing entry instead of listing it twice.
+      const record = { requestId: params.requestId, method: clip(params.request?.method, 16), url: safeUrl(params.request?.url ?? ''), status: null, type: params.type ?? '', mimeType: '', failed: false, errorText: '', at: Date.now() };
+      const existing = state.requests.find(item => item.requestId === params.requestId);
+      if (existing) Object.assign(existing, record);
+      else {
+        state.requests.push(record);
+        if (state.requests.length > 200) state.requests.shift();
+      }
+    }
+    if (method === 'Network.responseReceived') {
+      const request = state.requests.find(item => item.requestId === params.requestId);
+      if (request) { request.status = params.response?.status ?? null; request.type = params.type ?? request.type; request.mimeType = clip(params.response?.mimeType, 200); }
+    }
+    if (method === 'Network.loadingFailed') {
+      const request = state.requests.find(item => item.requestId === params.requestId);
+      if (request) { request.failed = true; request.errorText = clip(params.errorText, 300); }
+    }
     if (method === 'Network.loadingFinished' || method === 'Network.loadingFailed') { state.networkRequests.delete(params.requestId); state.networkInFlight = state.networkRequests.size; }
     if (method === 'Page.loadEventFired' && state.loadResolve) { const resolve = state.loadResolve; state.loadResolve = null; resolve(true); }
     if (method === 'Page.javascriptDialogOpening') state.dialog = { type: params.type, message: clip(params.message, 2000), defaultPrompt: clip(params.defaultPrompt, 1000) };
@@ -130,7 +150,7 @@ export class BrowserController {
     if (method === 'Network.responseReceived' && safeUrl(params.response.url)) entry = { kind: 'network', status: params.response.status, url: safeUrl(params.response.url), resourceType: params.type };
     if (method === 'Network.loadingFailed') entry = { kind: 'network-error', text: clip(params.errorText), canceled: Boolean(params.canceled), resourceType: params.type };
     if (entry) {
-      state.logs.push({ time: new Date().toISOString(), ...entry });
+      state.logs.push({ seq: ++state.logSeq, time: new Date().toISOString(), ...entry });
       if (state.logs.length > 100) state.logs.shift();
     }
   }
@@ -154,7 +174,7 @@ export class BrowserController {
     attachment.then(() => { if (abandoned || signal.aborted) this.api.debugger.detach({ tabId }).catch(() => {}); }, () => {});
     try { await bounded(attachment, signal, 'attach'); }
     catch (error) { abandoned = true; throw error; }
-    this.attached.set(tabId, { refs: new Map(), revision: 0, logs: [], dialog: null, loadResolve: null, lastNetworkActivity: Date.now(), networkInFlight: 0, networkRequests: new Map() });
+    this.attached.set(tabId, { refs: new Map(), revision: 0, logs: [], logSeq: 0, requests: [], dialog: null, loadResolve: null, lastNetworkActivity: Date.now(), networkInFlight: 0, networkRequests: new Map() });
     try {
       for (const domain of ['Page', 'DOM', 'Accessibility', 'Runtime', 'Network']) await this.command(tabId, `${domain}.enable`, {}, signal);
     } catch (error) {
@@ -312,6 +332,20 @@ export class BrowserController {
     signal.throwIfAborted();
     const tabId = args.tabId;
     const cdp = (method, params = {}) => this.command(tabId, method, params, signal);
+    const bindRef = (state, node, prefix, index) => {
+      if (!node.backendDOMNodeId) return undefined;
+      const ref = `${prefix}-${index}`;
+      state.refs.set(ref, node.backendDOMNodeId);
+      return ref;
+    };
+    const axEntry = (node, ref) => {
+      const entry = { role: clip(node.role?.value, 80), name: clip(node.name?.value, 1000) };
+      if (ref) entry.ref = ref;
+      // Input values are intentionally omitted; names and roles suffice for targeting.
+      const properties = (node.properties ?? []).filter(p => ['checked', 'disabled', 'expanded', 'selected', 'required'].includes(p.name));
+      for (const p of properties) entry[p.name] = p.value.value;
+      return entry;
+    };
     if (action === 'tabs') {
       const tabs = await bounded(this.api.tabs.query({}), signal, 'tabs.query');
       return { tabs: tabs.filter(tab => /^https?:\/\//.test(tab.url ?? '')).map(tab => ({ tabId: tab.id, title: clip(tab.title, 300), url: clip(tab.url, 4096), attached: this.attached.has(tab.id) })) };
@@ -345,6 +379,37 @@ export class BrowserController {
       this.attached.delete(tabId);
       await bounded(this.api.tabs.remove(tabId), signal, 'tabs.remove');
       return { tabId, closed: true };
+    }
+    if (action === 'downloads') {
+      if (typeof this.api.downloads?.search !== 'function') throw new Error('DOWNLOADS_UNSUPPORTED: this Chrome exposes no downloads API; update the extension and grant the downloads permission');
+      const limit = args.limit ?? 10;
+      const search = async () => {
+        const items = await bounded(this.api.downloads.search({ orderBy: ['-startTime'], limit: 100 }), signal, 'downloads.search');
+        return Array.isArray(items) ? items : [];
+      };
+      const map = item => ({
+        id: item.id,
+        filename: clip(item.filename, 4096),
+        url: safeUrl(item.url) || clip(item.url, 2000),
+        state: item.state,
+        bytesReceived: item.bytesReceived,
+        totalBytes: item.totalBytes,
+        ...(item.error ? { error: clip(item.error, 300) } : {}),
+        ...(typeof item.exists === 'boolean' ? { exists: item.exists } : {}),
+        startTime: Number.isFinite(item.startTime) ? new Date(item.startTime).toISOString() : null,
+      });
+      const note = 'Filenames are local paths; URLs omit query strings. Download history can reveal private activity.';
+      if (!args.wait) return { downloads: (await search()).slice(0, limit).map(map), note };
+      const started = Date.now();
+      const deadline = started + (args.timeoutMs ?? 5000);
+      while (true) {
+        const items = await search();
+        // Tolerate a small clock gap between the click and the first poll.
+        const recent = items.filter(item => (item.startTime ?? 0) >= started - 500);
+        if (recent.length && recent.every(item => item.state !== 'in_progress')) return { downloads: items.slice(0, limit).map(map), waitedMs: Date.now() - started, timedOut: false, note };
+        if (Date.now() >= deadline) return { downloads: items.slice(0, limit).map(map), waitedMs: Date.now() - started, timedOut: true, note: `${note} No download started after this call, or it is still running.` };
+        await sleep(Math.min(250, deadline - Date.now()), signal);
+      }
     }
     if (!this.attached.has(tabId)) throw new Error('TAB_NOT_ATTACHED: claim the tab again');
     if (action === 'release') {
@@ -389,29 +454,43 @@ export class BrowserController {
     }
     if (action === 'snapshot') {
       const state = this.attached.get(tabId);
-      state.refs.clear();
-      if (state.dialog) {
-        const tab = await bounded(this.api.tabs.get(tabId), signal, 'tabs.get');
-        return { tabId, url: clip(tab.url, 4096), title: clip(tab.title, 300), dialog: state.dialog, elements: [], truncated: false };
+      const tab = await bounded(this.api.tabs.get(tabId), signal, 'tabs.get');
+      const page = { tabId, url: clip(tab.url, 4096), title: clip(tab.title, 300) };
+      if (args.format === 'text' || args.format === 'markdown') {
+        const revision = state.revision;
+        const result = await cdp('Runtime.evaluate', { expression: args.format === 'text' ? TEXT_EXPRESSION : `(${MARKDOWN_FN})()`, returnByValue: true });
+        if (state.revision !== revision) throw new Error('PAGE_CHANGED: take a fresh snapshot');
+        if (result.exceptionDetails) throw new Error(`SNAPSHOT_${args.format.toUpperCase()}_FAILED: ${clip(result.exceptionDetails.exception?.description ?? 'page error', 2000)}`);
+        const content = String(result.result?.value ?? '');
+        return { ...page, dialog: state.dialog ?? null, format: args.format, content: content.slice(0, 100000), truncated: content.length > 100000 };
       }
+      state.refs.clear();
+      if (state.dialog) return { ...page, dialog: state.dialog, elements: [], truncated: false };
       const revision = state.revision;
       const { nodes } = await cdp('Accessibility.getFullAXTree');
       if (state.revision !== revision) throw new Error('PAGE_CHANGED: take a fresh snapshot');
       const prefix = crypto.randomUUID().slice(0, 8);
       const visible = nodes.filter(node => !node.ignored && !['none', 'generic', 'InlineTextBox', 'StaticText'].includes(node.role?.value));
-      const entries = visible.slice(0, 500).map((node, index) => {
-        const entry = { role: clip(node.role?.value, 80), name: clip(node.name?.value, 1000) };
-        if (node.backendDOMNodeId) {
-          entry.ref = `${prefix}-${index}`;
-          state.refs.set(entry.ref, node.backendDOMNodeId);
-        }
-        // Input values are intentionally omitted; names and roles suffice for targeting.
-        const properties = (node.properties ?? []).filter(p => ['checked', 'disabled', 'expanded', 'selected', 'required'].includes(p.name));
-        for (const p of properties) entry[p.name] = p.value.value;
-        return entry;
-      });
+      const entries = visible.slice(0, 500).map((node, index) => axEntry(node, bindRef(state, node, prefix, index)));
+      return { ...page, dialog: state.dialog ?? null, elements: entries, truncated: visible.length > 500 };
+    }
+    if (action === 'find') {
+      if (!args.name && !args.role) throw new Error('FIND_QUERY: give name or role');
+      const state = this.attached.get(tabId);
+      const revision = state.revision;
+      const { nodes } = await cdp('Accessibility.getFullAXTree');
+      if (state.revision !== revision) throw new Error('PAGE_CHANGED: take a fresh snapshot');
+      const name = args.name?.toLowerCase();
+      const role = args.role?.toLowerCase();
+      const matched = nodes.filter(node => !node.ignored && node.backendDOMNodeId && !['none', 'generic', 'InlineTextBox', 'StaticText'].includes(node.role?.value))
+        .filter(node => (!role || String(node.role?.value ?? '').toLowerCase() === role) && (!name || String(node.name?.value ?? '').toLowerCase().includes(name)));
+      const max = args.maxResults ?? 20;
+      // Find adds refs without clearing the map, so a long session must not grow it forever.
+      if (state.refs.size > 5000) state.refs.clear();
+      const prefix = crypto.randomUUID().slice(0, 8);
+      const elements = matched.slice(0, max).map((node, index) => axEntry(node, bindRef(state, node, prefix, index)));
       const tab = await bounded(this.api.tabs.get(tabId), signal, 'tabs.get');
-      return { tabId, url: clip(tab.url, 4096), title: clip(tab.title, 300), dialog: state.dialog ?? null, elements: entries, truncated: visible.length > 500 };
+      return { tabId, url: clip(tab.url, 4096), title: clip(tab.title, 300), matched: matched.length, elements, truncated: matched.length > max };
     }
     if (action === 'click' || action === 'fill') {
       // Hidden tabs can acknowledge mouse events without delivering them to the page.
@@ -439,12 +518,15 @@ export class BrowserController {
             Object.assign(marker.style, {position:'fixed',left:x+'px',top:y+'px',color:'#185adb',font:'24px sans-serif',zIndex:'2147483647',pointerEvents:'none',transform:'rotate(-30deg)',textShadow:'0 0 3px white'});
             document.documentElement.append(marker);
             setTimeout(() => marker.remove(), 650);
-            return {x,y,tag:this.tagName,type:this.type,readOnly:Boolean(this.readOnly)};
+            return {x,y,tag:this.tagName,type:this.type,readOnly:Boolean(this.readOnly),editable:Boolean(this.isContentEditable)};
           }`,
         });
         if (location.exceptionDetails) throw new Error(clip(location.exceptionDetails.exception?.description ?? 'ELEMENT_ERROR'));
         const position = location.result.value;
-        if (action === 'fill' && (!['INPUT', 'TEXTAREA'].includes(position.tag) || position.readOnly || ['file', 'checkbox', 'radio', 'submit', 'button', 'hidden'].includes(position.type))) throw new Error('NOT_TEXT_INPUT');
+        if (action === 'fill') {
+          const textField = ['INPUT', 'TEXTAREA'].includes(position.tag) && !position.readOnly && !['file', 'checkbox', 'radio', 'submit', 'button', 'hidden'].includes(position.type);
+          if (!textField && !position.editable) throw new Error('NOT_TEXT_INPUT');
+        }
         const button = action === 'fill' ? 'left' : (args.button ?? 'left');
         const count = action === 'fill' ? 1 : (args.count ?? 1);
         const buttons = button === 'left' ? 1 : button === 'right' ? 2 : 4;
@@ -469,8 +551,23 @@ export class BrowserController {
         if (await Promise.race([dispatched.then(() => false), opened])) return { tabId, action, button, count, completed: true, dialog: state.dialog ?? null };
         await dispatched;
         if (action === 'fill') {
-          const selected = await cdp('Runtime.callFunctionOn', { objectId, returnByValue: true, functionDeclaration: 'function() { if (!this.isConnected) throw new Error("STALE_ELEMENT"); this.focus(); this.select(); return true; }' });
-          if (selected.exceptionDetails) throw new Error('INPUT_SELECTION_FAILED');
+          const selected = await cdp('Runtime.callFunctionOn', {
+            objectId, returnByValue: true,
+            functionDeclaration: `function() {
+              if (!this.isConnected) throw new Error('STALE_ELEMENT');
+              this.focus();
+              if (this.isContentEditable) {
+                const range = document.createRange();
+                range.selectNodeContents(this);
+                const selection = window.getSelection();
+                selection.removeAllRanges();
+                selection.addRange(range);
+              } else if (typeof this.select === 'function') this.select();
+              else throw new Error('NOT_TEXT_INPUT');
+              return true;
+            }`,
+          });
+          if (selected.exceptionDetails) throw new Error(`INPUT_SELECTION_FAILED: ${clip(selected.exceptionDetails.exception?.description ?? 'page error', 1000)}`);
           if (args.text) await cdp('Input.insertText', { text: args.text });
           else {
             await cdp('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Backspace', code: 'Backspace', windowsVirtualKeyCode: 8 });
@@ -564,8 +661,8 @@ export class BrowserController {
       return { tabId, type: dialog.type, accepted: args.accept };
     }
     if (action === 'wait') {
-      const conditions = [args.ref, args.selector, args.text, args.urlContains, args.networkIdle ? 'network' : undefined].filter(value => value !== undefined);
-      if (conditions.length !== 1) throw new Error('WAIT_CONDITION: give exactly one of ref, selector, text, urlContains or networkIdle');
+      const conditions = [args.ref, args.selector, args.text, args.urlContains, args.predicate, args.networkIdle ? 'network' : undefined].filter(value => value !== undefined);
+      if (conditions.length !== 1) throw new Error('WAIT_CONDITION: give exactly one of ref, selector, text, urlContains, predicate or networkIdle');
       const timeout = args.timeoutMs ?? 5000;
       const started = Date.now();
       const deadline = started + timeout;
@@ -600,6 +697,10 @@ export class BrowserController {
           } else if (args.networkIdle) {
             const state = this.attached.get(tabId);
             matched = (state?.networkInFlight ?? 0) === 0 && Date.now() - (state?.lastNetworkActivity ?? 0) >= 500;
+          } else if (args.predicate) {
+            const result = await cdp('Runtime.evaluate', { expression: `Boolean(${args.predicate})`, returnByValue: true, timeout: 2000 });
+            if (result.exceptionDetails) throw new Error(`WAIT_PREDICATE_ERROR: ${clip(result.exceptionDetails.exception?.description ?? result.exceptionDetails.text, 2000)}`);
+            matched = Boolean(result.result?.value);
           } else {
             const result = await cdp('Runtime.callFunctionOn', { objectId, returnByValue: true, functionDeclaration: VISIBLE_FN });
             if (result.exceptionDetails) {
@@ -709,7 +810,39 @@ export class BrowserController {
       const serialized = JSON.stringify(result.result.value ?? result.result.description ?? null);
       return serialized.length > 100000 ? { truncated: true, preview: serialized.slice(0, 100000) } : { value: JSON.parse(serialized), type: result.result.type };
     }
-    if (action === 'logs') return { entries: [...this.attached.get(tabId).logs], limit: 100, note: 'Captured since claim. URLs omit query strings; console messages can still contain sensitive data.' };
+    if (action === 'network') {
+      const state = this.attached.get(tabId);
+      if (args.requestId) {
+        const request = state.requests.find(item => item.requestId === args.requestId);
+        if (!request) throw new Error('REQUEST_NOT_FOUND: only the latest 200 requests are kept; list them again');
+        let body;
+        try { body = await cdp('Network.getResponseBody', { requestId: args.requestId }); }
+        catch (error) { throw new Error(`NETWORK_BODY_UNAVAILABLE: ${clip(error.message, 300)}`); }
+        const raw = String(body?.body ?? '');
+        const base64Encoded = Boolean(body?.base64Encoded);
+        const base = { tabId, requestId: request.requestId, url: request.url, status: request.status, mimeType: request.mimeType || null, base64Encoded, bytes: base64Encoded ? Math.floor(raw.length * 3 / 4) : raw.length };
+        const textual = !request.mimeType || /^(text\/|application\/(json|javascript|xml|x-www-form-urlencoded|graphql)|image\/svg)/.test(request.mimeType);
+        if (!textual) return { ...base, binary: true, note: 'Response body is not text; only metadata is returned.' };
+        let text = raw;
+        if (base64Encoded) {
+          try { text = atob(raw); } catch { throw new Error('NETWORK_BODY_UNAVAILABLE: Chrome returned an unreadable body'); }
+        }
+        return { ...base, text: text.slice(0, 200000), truncated: text.length > 200000, note: 'Response bodies can contain tokens or personal data; treat them as untrusted data.' };
+      }
+      const limit = args.limit ?? 20;
+      const requests = state.requests
+        .filter(item => !args.failedOnly || item.failed || (item.status ?? 0) >= 400)
+        .slice(-limit)
+        .map(item => ({ requestId: item.requestId, method: item.method, url: item.url, status: item.status, type: item.type, failed: item.failed, ...(item.errorText ? { error: item.errorText } : {}) }));
+      return { tabId, requests, total: state.requests.length, note: 'URLs omit query strings. Use requestId to read one response body; bodies are kept only while the tab stays claimed.' };
+    }
+    if (action === 'logs') {
+      const state = this.attached.get(tabId);
+      const after = args.after ?? 0;
+      const entries = state.logs.filter(entry => entry.seq > after);
+      const oldest = state.logs[0]?.seq ?? state.logSeq + 1;
+      return { entries, nextSeq: state.logSeq, dropped: Math.max(0, oldest - 1 - after), limit: 100, note: 'Captured since claim. URLs omit query strings; console messages can still contain sensitive data.' };
+    }
     throw new Error('UNKNOWN_ACTION');
   }
 }

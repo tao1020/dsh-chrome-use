@@ -18,6 +18,7 @@ function fixture(overrides = {}) {
       remove: async id => { calls.push(['tabs.remove', id]); },
     },
     windows: { update: async (id, info) => { calls.push(['windows.update', { id, ...info }]); return { id, ...info }; } },
+    downloads: { search: async options => { calls.push(['downloads.search', options]); return overrides['downloads.search'] ? overrides['downloads.search'](options) : []; } },
     tabGroups: {
       query: async info => { calls.push(['tabGroups.query', info]); return groups; },
       update: async (id, info) => { calls.push(['tabGroups.update', { id, ...info }]); },
@@ -452,4 +453,146 @@ test('networkIdle waits for in-flight requests instead of relying on a quiet gap
   const quiet = await controller.execute('wait', { tabId: 7, networkIdle: true, timeoutMs: 2000 });
   assert.equal(quiet.gone, false);
   assert.ok(quiet.waitedMs >= 450);
+});
+
+test('snapshot text and markdown modes return page content and keep refs valid', async () => {
+  const view = { 'Runtime.evaluate': params => {
+    if (params.expression.startsWith('(() =>')) return { result: { value: 'Hello\nWorld' } };
+    if (params.expression.startsWith('(function')) return { result: { value: '# Title\n\nBody [link](https://example.com/a)' } };
+    return { result: { value: true } };
+  } };
+  const { controller, calls } = fixture(view);
+  await controller.execute('claim', { tabId: 7 });
+  const ax = await controller.execute('snapshot', { tabId: 7 });
+  const text = await controller.execute('snapshot', { tabId: 7, format: 'text' });
+  assert.equal(text.format, 'text');
+  assert.equal(text.content, 'Hello\nWorld');
+  assert.equal(text.elements, undefined);
+  const markdown = await controller.execute('snapshot', { tabId: 7, format: 'markdown' });
+  assert.match(markdown.content, /^# Title/);
+  assert.ok(calls.some(([method, params]) => method === 'Runtime.evaluate' && params.expression.startsWith('(function')));
+  // A text snapshot does not clear refs: the old ref still clicks.
+  await controller.execute('click', { tabId: 7, ref: ax.elements[0].ref });
+  assert.ok(calls.some(([method]) => method === 'Input.dispatchMouseEvent'));
+  await assert.rejects(controller.execute('snapshot', { tabId: 7, format: 'html' }), /INVALID_ARGUMENT/);
+});
+
+test('find searches the whole tree by name and role and returns usable refs', async () => {
+  const nodes = [
+    { role: { value: 'link' }, name: { value: 'Docs home' }, backendDOMNodeId: 51 },
+    { role: { value: 'link' }, name: { value: 'Pricing' }, backendDOMNodeId: 52 },
+    { role: { value: 'textbox' }, name: { value: 'Email' }, backendDOMNodeId: 53 },
+    { role: { value: 'StaticText' }, name: { value: 'Docs body' }, backendDOMNodeId: 54 },
+  ];
+  const { controller, calls } = fixture({ 'Accessibility.getFullAXTree': () => ({ nodes }) });
+  await controller.execute('claim', { tabId: 7 });
+  const byName = await controller.execute('find', { tabId: 7, name: 'docs' });
+  assert.equal(byName.matched, 1);
+  assert.deepEqual(byName.elements.map(e => [e.role, e.name]), [['link', 'Docs home']]);
+  await controller.execute('click', { tabId: 7, ref: byName.elements[0].ref });
+  assert.ok(calls.some(([method]) => method === 'Input.dispatchMouseEvent'));
+  const byRole = await controller.execute('find', { tabId: 7, role: 'textbox' });
+  assert.deepEqual(byRole.elements.map(e => e.name), ['Email']);
+  const capped = await controller.execute('find', { tabId: 7, role: 'link', maxResults: 1 });
+  assert.deepEqual([capped.matched, capped.elements.length, capped.truncated], [2, 1, true]);
+  await assert.rejects(controller.execute('find', { tabId: 7 }), /FIND_QUERY/);
+});
+
+test('logs return only entries newer than the cursor', async () => {
+  const { controller, listeners } = fixture();
+  await controller.execute('claim', { tabId: 7 });
+  const consoleEvent = text => listeners.event({ tabId: 7 }, 'Runtime.consoleAPICalled', { type: 'log', args: [{ value: text }] });
+  consoleEvent('one');
+  consoleEvent('two');
+  const first = await controller.execute('logs', { tabId: 7 });
+  assert.deepEqual(first.entries.map(e => e.text), ['one', 'two']);
+  assert.equal(first.nextSeq, 2);
+  consoleEvent('three');
+  const next = await controller.execute('logs', { tabId: 7, after: first.nextSeq });
+  assert.deepEqual(next.entries.map(e => e.text), ['three']);
+  assert.equal(next.nextSeq, 3);
+  assert.equal(next.dropped, 0);
+  const none = await controller.execute('logs', { tabId: 7, after: next.nextSeq });
+  assert.deepEqual(none.entries, []);
+});
+
+test('network lists requests and returns a text response body', async () => {
+  const { controller, listeners, calls } = fixture({ 'Network.getResponseBody': () => ({ body: '{"ok":true}', base64Encoded: false }) });
+  await controller.execute('claim', { tabId: 7 });
+  listeners.event({ tabId: 7 }, 'Network.requestWillBeSent', { requestId: 'r1', type: 'XHR', request: { method: 'GET', url: 'https://example.com/api?token=secret' } });
+  listeners.event({ tabId: 7 }, 'Network.responseReceived', { requestId: 'r1', type: 'XHR', response: { status: 200, mimeType: 'application/json', url: 'https://example.com/api?token=secret' } });
+  listeners.event({ tabId: 7 }, 'Network.requestWillBeSent', { requestId: 'r2', type: 'Fetch', request: { method: 'POST', url: 'https://example.com/fail' } });
+  listeners.event({ tabId: 7 }, 'Network.loadingFailed', { requestId: 'r2', errorText: 'net::ERR_FAILED' });
+  const list = await controller.execute('network', { tabId: 7 });
+  assert.deepEqual(list.requests.map(r => [r.requestId, r.url, r.status]), [['r1', 'https://example.com/api', 200], ['r2', 'https://example.com/fail', null]]);
+  assert.equal(list.requests[1].failed, true);
+  assert.ok(!JSON.stringify(list).includes('secret'));
+  const failed = await controller.execute('network', { tabId: 7, failedOnly: true });
+  assert.deepEqual(failed.requests.map(r => r.requestId), ['r2']);
+  const body = await controller.execute('network', { tabId: 7, requestId: 'r1' });
+  assert.equal(body.text, '{"ok":true}');
+  assert.equal(body.mimeType, 'application/json');
+  const call = calls.find(([method]) => method === 'Network.getResponseBody');
+  assert.deepEqual(call[1], { requestId: 'r1' });
+  await assert.rejects(controller.execute('network', { tabId: 7, requestId: 'gone' }), /REQUEST_NOT_FOUND/);
+});
+
+test('network bodies that Chrome cannot read fail with a clear error', async () => {
+  const { controller, listeners } = fixture({ 'Network.getResponseBody': () => { throw new Error('No resource with given identifier'); } });
+  await controller.execute('claim', { tabId: 7 });
+  listeners.event({ tabId: 7 }, 'Network.requestWillBeSent', { requestId: 'r1', request: { method: 'GET', url: 'https://example.com/api' } });
+  await assert.rejects(controller.execute('network', { tabId: 7, requestId: 'r1' }), /NETWORK_BODY_UNAVAILABLE/);
+});
+
+test('wait accepts a page predicate and reports a broken expression', async () => {
+  const { controller } = fixture({ 'Runtime.evaluate': params => {
+    if (params.expression === 'Boolean(bad())') return { exceptionDetails: { text: 'ReferenceError', exception: { description: 'ReferenceError: bad is not defined' } } };
+    return { result: { value: true } };
+  } });
+  await controller.execute('claim', { tabId: 7 });
+  const result = await controller.execute('wait', { tabId: 7, predicate: 'document.readyState === "complete"' });
+  assert.equal(result.gone, false);
+  await assert.rejects(controller.execute('wait', { tabId: 7, predicate: 'bad()' }), /WAIT_PREDICATE_ERROR/);
+  await assert.rejects(controller.execute('wait', { tabId: 7 }), /WAIT_CONDITION/);
+});
+
+test('fill types into contenteditable elements', async () => {
+  const { controller, calls } = fixture({ 'Runtime.callFunctionOn': params => {
+    if (params.functionDeclaration.includes('getBoundingClientRect')) return { result: { value: { x: 5, y: 6, tag: 'DIV', readOnly: false, editable: true } } };
+    return { result: { value: true } };
+  } });
+  await controller.execute('claim', { tabId: 7 });
+  const snapshot = await controller.execute('snapshot', { tabId: 7 });
+  await controller.execute('fill', { tabId: 7, ref: snapshot.elements[0].ref, text: 'rich text' });
+  assert.ok(calls.some(([method, params]) => method === 'Input.insertText' && params.text === 'rich text'));
+  const select = calls.find(([method, params]) => method === 'Runtime.callFunctionOn' && params.functionDeclaration.includes('selectNodeContents'));
+  assert.ok(select, 'contenteditable selection uses a Range');
+});
+
+test('downloads lists recent items and can wait for one to settle', async () => {
+  const item = { id: 3, filename: '/Users/me/Downloads/a.pdf', url: 'https://example.com/a.pdf?token=secret', state: 'complete', bytesReceived: 10, totalBytes: 10, exists: true, startTime: Date.now() };
+  let callsToSearch = 0;
+  const { controller, calls } = fixture({ 'downloads.search': () => { callsToSearch++; return callsToSearch < 2 ? [] : [item]; } });
+  const listed = await controller.execute('downloads', {});
+  assert.deepEqual(listed.downloads, []);
+  const waited = await controller.execute('downloads', { wait: true, timeoutMs: 2000 });
+  assert.equal(waited.timedOut, false);
+  assert.deepEqual(waited.downloads.map(d => [d.id, d.url, d.state, d.exists]), [[3, 'https://example.com/a.pdf', 'complete', true]]);
+  assert.ok(!JSON.stringify(waited).includes('secret'));
+  assert.equal(calls.filter(([method]) => method === 'downloads.search').length >= 2, true);
+});
+
+test('downloads reports a missing API instead of hanging', async () => {
+  const { controller, api } = fixture();
+  delete api.downloads;
+  await assert.rejects(controller.execute('downloads', {}), /DOWNLOADS_UNSUPPORTED/);
+});
+
+test('a redirect updates one network entry instead of duplicating it', async () => {
+  const { controller, listeners } = fixture();
+  await controller.execute('claim', { tabId: 7 });
+  listeners.event({ tabId: 7 }, 'Network.requestWillBeSent', { requestId: 'r1', request: { method: 'GET', url: 'https://example.com/start' } });
+  listeners.event({ tabId: 7 }, 'Network.requestWillBeSent', { requestId: 'r1', request: { method: 'GET', url: 'https://example.com/end' } });
+  const list = await controller.execute('network', { tabId: 7 });
+  assert.deepEqual(list.requests.map(r => [r.requestId, r.url]), [['r1', 'https://example.com/end']]);
 });

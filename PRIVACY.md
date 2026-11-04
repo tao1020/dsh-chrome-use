@@ -2,7 +2,7 @@
 
 ## 访问范围
 
-dsh-chrome-use 用于让你配置的 DeepSeek Harness 操作本机 Chrome。扩展需要 `debugger`、`tabs`、`storage` 和 `alarms` 权限，分别用于调试网页、选择标签页、保存配对状态和恢复连接。
+dsh-chrome-use 用于让你配置的 DeepSeek Harness 操作本机 Chrome。扩展需要 `debugger`、`tabs`、`tabGroups`、`storage`、`alarms` 和 `downloads` 权限，分别用于调试网页、选择标签页、把新页面放进同名标签页组、保存配对状态、恢复连接和读取下载记录。
 
 连接后，Harness 可以读取和操作所有普通 HTTP(S) 标签页，包括已登录的网站。只有 AI 接管的页面才会开启调试和日志采集。Chrome 调试提示条会显示当前调试状态；你可以在扩展弹窗点击“断开连接”。
 
@@ -16,7 +16,7 @@ dsh-chrome-use 用于让你配置的 DeepSeek Harness 操作本机 Chrome。扩�
 
 配对信息保存在 Chrome 扩展存储，以及 Harness 所在机器的 `~/.dsh/dsh-chrome-use/pairing.json`。截图保存在同目录下的 `screenshots/`，需要你自行删除。Harness 可能保存会话历史。
 
-网页快照不直接返回控件的 `value` 字段，但页面中的可见文字仍会返回。截图可能包含可见的私人内容，`chrome_evaluate` 也可以读取页面数据。网络日志不采集请求头、Cookie、请求体或响应体，URL 会去除查询参数和片段。控制台文字仍可能包含网站输出的敏感信息。
+网页快照不直接返回控件的 `value` 字段，但页面中的可见文字仍会返回。截图可能包含可见的私人内容，`chrome_evaluate` 也可以读取页面数据。网络日志只记录方法、URL、状态和类型，不采集请求头、Cookie、请求体或响应体；`chrome_network` 只在明确按 `requestId` 请求时读取一条响应体，不同步保存到磁盘，标签页释放后不再保留。URL 会去除查询参数和片段。控制台文字仍可能包含网站输出的敏感信息。截图默认只保存到本机；传 `inline=true` 时图片会进入 Harness 会话，并可能发送给模型提供方。
 
 ## 停止使用
 
