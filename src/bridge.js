@@ -22,6 +22,9 @@ export class Bridge {
     // Chats queue here when they want a tab another chat already claimed.
     this.claimWaiters = new Map();
     this.closingTabs = new Set();
+    // Chrome can drop a debugger session on its own. Remember why for a short
+    // while so a follow-up command can say more than "claim the tab first".
+    this.lastDetach = new Map();
     this.closed = false;
     this.authFailures = [];
   }
@@ -145,6 +148,11 @@ export class Bridge {
         }
         if (message.type === 'detached' && Number.isSafeInteger(message.tabId)) {
           this.claims.delete(message.tabId);
+          this.lastDetach.set(message.tabId, {
+            reason: typeof message.reason === 'string' ? message.reason.slice(0, 40) : null,
+            at: Date.now(),
+          });
+          if (this.lastDetach.size > 200) this.lastDetach.delete(this.lastDetach.keys().next().value);
           this.wake(message.tabId);
           return;
         }
@@ -226,6 +234,15 @@ export class Bridge {
     this.wake(tabId);
   }
 
+  // Chrome reasons are short codes. Expire them so an old detach cannot explain
+  // an unrelated failure much later.
+  detachNote(tabId) {
+    const last = this.lastDetach.get(tabId);
+    if (!last || Date.now() - last.at > 60000) return '';
+    const age = Math.max(0, Math.round((Date.now() - last.at) / 1000));
+    return ` (Chrome detached this tab ${age}s ago${last.reason ? `: ${last.reason}` : ''})`;
+  }
+
   rejectWaiters(tabId, error) {
     const queue = this.claimWaiters.get(tabId);
     if (!queue) return;
@@ -245,7 +262,7 @@ export class Bridge {
     const parallel = peer.parallel === true;
     if (!parallel && this.pending.size) throw new Error('BROWSER_BUSY: another command is running; wait for its result');
     if (!owner) throw new Error('MISSING_CHAT_ID');
-    if (args.tabId && action !== 'claim' && this.claims.get(args.tabId) !== owner) throw new Error('TAB_NOT_OWNED: claim the tab first');
+    if (args.tabId && action !== 'claim' && this.claims.get(args.tabId) !== owner) throw new Error(`TAB_NOT_OWNED: claim the tab first${this.detachNote(args.tabId)}`);
     const tabId = Number.isSafeInteger(args.tabId) ? args.tabId : undefined;
     let reserved = false;
     let acquired = false;
@@ -313,6 +330,7 @@ export class Bridge {
         const tab = action === 'open' ? result.tabId : args.tabId;
         if (!Number.isSafeInteger(tab) || tab < 1 || this.claims.has(tab) && this.claims.get(tab) !== owner) throw new Error('INVALID_BROWSER_TAB');
         this.claims.set(tab, owner);
+        this.lastDetach.delete(tab);
         acquired = true;
       }
       if (action === 'release') this.releaseClaim(args.tabId, owner);

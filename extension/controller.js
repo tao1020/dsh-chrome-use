@@ -13,6 +13,27 @@ function safeUrl(value) {
   try { const u = new URL(value); return ['http:', 'https:'].includes(u.protocol) ? `${u.origin}${u.pathname}`.slice(0, 2000) : ''; } catch { return ''; }
 }
 
+// Chrome reports an attach failure as a bare reason and never names the tab it
+// applies to. Report the tab id, the attach stage and the location this
+// extension resolved so a caller can tell a stale id from a blocked tab.
+export function tabLocation(value) {
+  try {
+    const url = new URL(value);
+    if (url.protocol === 'chrome-extension:') return clip(`chrome-extension://${url.host}`, 100);
+    return ['http:', 'https:'].includes(url.protocol) ? clip(`${url.protocol}//${url.host}`, 200) : clip(url.protocol, 40);
+  } catch { return 'unparseable'; }
+}
+
+export function attachFailure(error, tabId, url, stage = 'attach') {
+  const reason = clip(error?.message ?? error, 300);
+  // Chrome refuses a tab that exposes another extension's URL. That can be an
+  // embedded frame as well as the top-level page, so do not name the owner.
+  const hint = /chrome-extension:\/\/ URL of different extension/i.test(reason)
+    ? '; Chrome blocked debugging because the tab exposes another extension\'s URL, which can also come from an embedded frame; open the page in a normal tab and claim that one'
+    : '';
+  return new Error(`ATTACH_FAILED at ${stage}: tab ${tabId} (${tabLocation(url)}) ${reason}${hint}`);
+}
+
 const GROUP_COLORS = ['grey', 'blue', 'red', 'yellow', 'green', 'pink', 'purple', 'cyan', 'orange'];
 export function groupColor(title) {
   let hash = 0;
@@ -98,11 +119,11 @@ export class BrowserController {
     // Native Chrome promises outlive our timeouts. Do not attach a new session
     // while a previous native cleanup can still detach it.
     this.pendingCleanup = new Map();
-    api.debugger.onDetach.addListener(({ tabId }) => {
-      if (this.attached.delete(tabId)) detached(tabId);
+    api.debugger.onDetach.addListener(({ tabId }, reason) => {
+      if (this.attached.delete(tabId)) detached(tabId, reason);
     });
     api.tabs.onRemoved.addListener(tabId => {
-      if (this.attached.delete(tabId)) detached(tabId);
+      if (this.attached.delete(tabId)) detached(tabId, 'target_closed');
     });
     api.debugger.onEvent.addListener((target, method, params) => this.event(target, method, params));
   }
@@ -130,7 +151,7 @@ export class BrowserController {
     // Explicit detach need not emit onDetach. Removing state first suppresses
     // duplicate events; notify only after native cleanup, before the result.
     await bounded(cleanup, undefined, 'detach', 1000);
-    if (attached) this.detached(tabId);
+    if (attached) this.detached(tabId, 'released');
   }
 
   event({ tabId }, method, params) {
@@ -197,14 +218,20 @@ export class BrowserController {
     try { await bounded(attachment, signal, 'attach'); }
     catch (error) {
       this.trackCleanup(tabId, attachment.then(() => this.api.debugger.detach({ tabId }), () => {}));
-      throw error;
+      throw attachFailure(error, tabId, currentUrl, 'attach');
     }
     this.attached.set(tabId, { refs: new Map(), revision: 0, logs: [], logSeq: 0, requests: [], dialog: null, loadResolve: null, lastNetworkActivity: Date.now(), networkInFlight: 0, networkRequests: new Map() });
+    let stage = 'attach';
     try {
-      for (const domain of ['Page', 'DOM', 'Accessibility', 'Runtime', 'Network']) await this.command(tabId, `${domain}.enable`, {}, signal);
+      for (const domain of ['Page', 'DOM', 'Accessibility', 'Runtime', 'Network']) {
+        stage = `${domain}.enable`;
+        await this.command(tabId, stage, {}, signal);
+      }
     } catch (error) {
-      await this.detachTab(tabId);
-      throw error;
+      // Report the failing domain first: a detach failure must not hide it.
+      const failure = attachFailure(error, tabId, currentUrl, stage);
+      await this.detachTab(tabId).catch(() => {});
+      throw failure;
     }
   }
 
@@ -827,7 +854,9 @@ export class BrowserController {
       return { data: result.data };
     }
     if (action === 'evaluate') {
-      const result = await cdp('Runtime.evaluate', { expression: args.expression, returnByValue: true, awaitPromise: false, timeout: 5000 });
+      // Await promises so an async expression returns its resolved value; without
+      // this Chrome hands back the pending promise and the caller sees {}.
+      const result = await cdp('Runtime.evaluate', { expression: args.expression, returnByValue: true, awaitPromise: true, timeout: 5000 });
       if (result.exceptionDetails) throw new Error(`JAVASCRIPT_ERROR: ${clip(result.exceptionDetails.exception?.description ?? result.exceptionDetails.text, 4000)}`);
       const serialized = JSON.stringify(result.result.value ?? result.result.description ?? null);
       return serialized.length > 100000 ? { truncated: true, preview: serialized.slice(0, 100000) } : { value: JSON.parse(serialized), type: result.result.type };
