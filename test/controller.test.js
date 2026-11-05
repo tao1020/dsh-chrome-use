@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { BrowserController, keyDescriptor, pageUrl } from '../extension/controller.js';
+import { BrowserController, keyDescriptor, pageUrl, tabLocation } from '../extension/controller.js';
 import { TOOLS, validateArgs } from '../extension/protocol.js';
 
 function fixture(overrides = {}) {
@@ -69,6 +69,19 @@ test('schemas reject unknown fields, invalid URL schemes and boundaries', () => 
   assert.doesNotThrow(() => validateArgs('chrome_screenshot', { tabId: 1, fullPage: true }));
   assert.doesNotThrow(() => validateArgs('chrome_pdf', { tabId: 1, landscape: true }));
   assert.doesNotThrow(() => validateArgs('chrome_activate', { tabId: 1 }));
+});
+test('a frozen argument object is validated without being mutated', () => {
+  const frozen = Object.freeze({ tabId: '183950055', expression: '1' });
+  assert.deepEqual(validateArgs('chrome_evaluate', frozen), { tabId: 183950055, expression: '1' });
+  assert.equal(frozen.tabId, '183950055');
+});
+test('a numeric tab id sent as a string is accepted instead of rejected', () => {
+  assert.deepEqual(validateArgs('chrome_evaluate', { tabId: '183950055', expression: '1' }).tabId, 183950055);
+  assert.deepEqual(validateArgs('chrome_snapshot', { tabId: ' 7 ' }).tabId, 7);
+  assert.throws(() => validateArgs('chrome_snapshot', { tabId: 'abc' }), /INVALID_ARGUMENT: tabId \(expected integer, received string\)/);
+  assert.throws(() => validateArgs('chrome_snapshot', { tabId: 1.5 }), /INVALID_ARGUMENT: tabId/);
+  assert.throws(() => validateArgs('chrome_snapshot', { tabId: 0 }), /out of range/);
+  assert.throws(() => validateArgs('chrome_snapshot', { tabId: null }), /received null/);
 });
 test('opening a tab requires a usable tab-group name', () => {
   assert.throws(() => validateArgs('chrome_open', { url: 'https://example.com/' }), /MISSING_ARGUMENT: group/);
@@ -657,4 +670,61 @@ test('a redirect updates one network entry instead of duplicating it', async () 
   listeners.event({ tabId: 7 }, 'Network.requestWillBeSent', { requestId: 'r1', request: { method: 'GET', url: 'https://example.com/end' } });
   const list = await controller.execute('network', { tabId: 7 });
   assert.deepEqual(list.requests.map(r => [r.requestId, r.url]), [['r1', 'https://example.com/end']]);
+});
+
+test('evaluate awaits a promise result instead of returning an empty object', async () => {
+  const { controller, calls } = fixture({ 'Runtime.evaluate': () => ({ result: { value: 42, type: 'number' } }) });
+  await controller.execute('claim', { tabId: 7 });
+  const result = await controller.execute('evaluate', { tabId: 7, expression: '(async () => 42)()' });
+  assert.deepEqual(result, { value: 42, type: 'number' });
+  const [, params] = calls.find(([method]) => method === 'Runtime.evaluate');
+  assert.equal(params.awaitPromise, true);
+  assert.equal(params.returnByValue, true);
+});
+
+test('a failed attach names the tab and keeps the Chrome reason', async () => {
+  const { controller, api } = fixture();
+  api.debugger.attach = async () => { throw new Error('Cannot access a chrome-extension:// URL of different extension'); };
+  await assert.rejects(
+    controller.execute('claim', { tabId: 7 }),
+    /ATTACH_FAILED at attach: tab 7 \(https:\/\/example\.com\) Cannot access a chrome-extension:\/\/ URL of different extension; Chrome blocked debugging because the tab exposes another extension's URL/,
+  );
+  assert.equal(controller.attached.has(7), false);
+});
+
+test('attach failures without the extension wording keep the message plain', async () => {
+  const { controller, api } = fixture();
+  api.debugger.attach = async () => { throw new Error('Another debugger is already attached to the tab with id: 7'); };
+  await assert.rejects(
+    controller.execute('claim', { tabId: 7 }),
+    error => /^ATTACH_FAILED at attach: tab 7 \(https:\/\/example\.com\) Another debugger is already attached/.test(error.message) && !/chrome-extension/.test(error.message),
+  );
+});
+
+test('tabLocation reports only the scheme and host', () => {
+  assert.equal(tabLocation('https://dba.example.com/path?token=1#x'), 'https://dba.example.com');
+  assert.equal(tabLocation('chrome-extension://abcdefghijklmnop/newtab.html'), 'chrome-extension://abcdefghijklmnop');
+  assert.equal(tabLocation('about:blank'), 'about:');
+  assert.equal(tabLocation('not a url'), 'unparseable');
+});
+
+test('a failing domain enable names the stage instead of the bare attach step', async () => {
+  const { controller, calls } = fixture({ 'Page.enable': () => { throw new Error('CDP_NOT_SUPPORTED'); } });
+  await assert.rejects(
+    controller.execute('claim', { tabId: 7 }),
+    error => /^ATTACH_FAILED at Page\.enable: tab 7 \(https:\/\/example\.com\) CDP_NOT_SUPPORTED$/.test(error.message),
+  );
+  assert.equal(controller.attached.has(7), false);
+  assert.ok(calls.some(([method]) => method === 'attach'));
+  assert.ok(calls.some(([method]) => method === 'detach'));
+});
+
+test('a Chrome initiated detach passes its reason to the listener', async () => {
+  const { api, listeners } = fixture();
+  const notifications = [];
+  const controller = new BrowserController(api, (tabId, reason) => notifications.push([tabId, reason]));
+  await controller.execute('claim', { tabId: 7 });
+  listeners.detach({ tabId: 7 }, 'replaced_with_devtools');
+  assert.deepEqual(notifications, [[7, 'replaced_with_devtools']]);
+  assert.equal(controller.attached.has(7), false);
 });

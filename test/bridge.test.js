@@ -359,3 +359,28 @@ test('disconnect rejects in-flight work, detached event removes ownership', asyn
   ws.close();
   await assert.rejects(pending, /BROWSER_DISCONNECTED/);
 });
+
+test('a Chrome detach explains a later claim requirement with its reason', async t => {
+  const bridge = await fixture(t);
+  const { ws } = await pair(bridge);
+  respond(ws);
+  await bridge.call('claim', { tabId: 7 }, 'a');
+  ws.send(JSON.stringify({ type: 'detached', tabId: 7, reason: 'replaced_with_devtools' }));
+  await until(() => bridge.claims.size === 0);
+  await assert.rejects(
+    bridge.call('snapshot', { tabId: 7 }, 'a'),
+    /TAB_NOT_OWNED: claim the tab first \(Chrome detached this tab \d+s ago: replaced_with_devtools\)/,
+  );
+});
+
+test('a fresh claim clears the remembered detach reason', async t => {
+  const bridge = await fixture(t);
+  const { ws } = await pair(bridge);
+  respond(ws);
+  await bridge.call('claim', { tabId: 7 }, 'a');
+  ws.send(JSON.stringify({ type: 'detached', tabId: 7, reason: 'target_closed' }));
+  await until(() => bridge.claims.size === 0);
+  await bridge.call('claim', { tabId: 7 }, 'a');
+  await bridge.call('release', { tabId: 7 }, 'a');
+  await assert.rejects(bridge.call('snapshot', { tabId: 7 }, 'a'), error => /TAB_NOT_OWNED: claim the tab first$/.test(error.message));
+});

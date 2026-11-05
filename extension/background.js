@@ -32,8 +32,10 @@ function acquireFocus(signal) {
   });
 }
 let lastError = '';
-const controller = new BrowserController(chrome, tabId => {
-  if (connected && socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'detached', tabId }));
+const controller = new BrowserController(chrome, (tabId, reason) => {
+  // Carry Chrome's detach reason so the host can explain a dropped tab instead
+  // of only reporting that the claim disappeared.
+  if (connected && socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'detached', tabId, ...(reason ? { reason: String(reason).slice(0, 40) } : {}) }));
 });
 const badge = text => { chrome.action.setBadgeText({ text }); chrome.action.setBadgeBackgroundColor({ color: '#185adb' }); };
 
