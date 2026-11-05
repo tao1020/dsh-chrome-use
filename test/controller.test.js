@@ -87,6 +87,43 @@ test('all ordinary tabs are available without per-tab consent; internal pages st
   api.tabs.get = async id => ({ id, url: 'chrome://settings/' });
   await assert.rejects(controller.execute('claim', { tabId: 8 }), /UNSUPPORTED_PAGE/);
 });
+test('detaching one tab keeps other attached tabs usable', async () => {
+  const { controller, calls } = fixture();
+  await controller.execute('claim', { tabId: 7 });
+  await controller.execute('claim', { tabId: 8 });
+  assert.equal(controller.attached.size, 2);
+  await controller.detachTab(7);
+  assert.equal(controller.attached.has(7), false);
+  assert.equal(controller.attached.has(8), true);
+  assert.ok(calls.some(([method, target]) => method === 'detach' && target.tabId === 7));
+  assert.equal((await controller.execute('snapshot', { tabId: 8, format: 'markdown' })).format, 'markdown');
+});
+test('intentional detach notifies once even when Chrome emits no detach event', async () => {
+  for (const emitsEvent of [false, true]) {
+    const { api, listeners } = fixture();
+    const notifications = [];
+    const controller = new BrowserController(api, tabId => notifications.push(tabId));
+    api.debugger.detach = async target => { if (emitsEvent) listeners.detach(target); };
+    await controller.execute('claim', { tabId: 7 });
+    await controller.execute('release', { tabId: 7 });
+    assert.deepEqual(notifications, [7]);
+    listeners.removed(7);
+    assert.deepEqual(notifications, [7]);
+  }
+});
+test('a timed-out native detach quarantines the tab until Chrome finishes cleanup', async () => {
+  const { controller, api, calls } = fixture();
+  await controller.execute('claim', { tabId: 7 });
+  let finishDetach;
+  api.debugger.detach = () => new Promise(resolve => { finishDetach = resolve; });
+  await assert.rejects(controller.detachTab(7), /CHROME_TIMEOUT: detach/);
+  const attempts = calls.filter(([method]) => method === 'attach').length;
+  await assert.rejects(controller.execute('claim', { tabId: 7 }, AbortSignal.timeout(20)), /COMMAND_CANCELED/);
+  assert.equal(calls.filter(([method]) => method === 'attach').length, attempts);
+  finishDetach();
+  await controller.execute('claim', { tabId: 7 });
+  assert.equal(calls.filter(([method]) => method === 'attach').length, attempts + 1);
+});
 test('opening a tab handles Chrome pending about:blank metadata and joins its tab group', async () => {
   const { controller, api, calls } = fixture();
   api.tabs.get = async id => ({ id, url: '', pendingUrl: 'about:blank', windowId: 1 });
@@ -324,6 +361,31 @@ test('an attachment that completes after its timeout is detached', async t => {
   assert.ok(calls.some(([method]) => method === 'detach'));
 });
 
+
+test('an abandoned native attach cannot race a later claim', async () => {
+  const { controller, api } = fixture();
+  let finishAttach;
+  let markStarted;
+  const started = new Promise(resolve => { markStarted = resolve; });
+  let attempts = 0;
+  api.debugger.attach = () => {
+    attempts++;
+    if (attempts > 1) return Promise.resolve();
+    markStarted();
+    return new Promise(resolve => { finishAttach = resolve; });
+  };
+  const cancellation = new AbortController();
+  const old = controller.execute('claim', { tabId: 7 }, cancellation.signal);
+  await started;
+  cancellation.abort();
+  await assert.rejects(old, /COMMAND_CANCELED/);
+  try {
+    await assert.rejects(controller.execute('claim', { tabId: 7 }, AbortSignal.timeout(20)), /COMMAND_CANCELED/);
+    assert.equal(attempts, 1);
+  } finally { finishAttach(); }
+  await controller.execute('claim', { tabId: 7 });
+  assert.equal(attempts, 2);
+});
 
 test('activate brings the tab forward and focuses its window', async () => {
   const { controller, calls } = fixture();

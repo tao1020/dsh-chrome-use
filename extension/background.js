@@ -1,22 +1,60 @@
 import { BrowserController } from './controller.js';
-import { PORT, MAX_MESSAGE } from './protocol.js';
+import { PORT, MAX_MESSAGE, PARALLEL_TABS } from './protocol.js';
 
 let socket;
 let connected = false;
 let connecting;
-let running;
+let connectionGeneration = 0;
+const running = new Map();
+const focusActions = new Set(['activate', 'close', 'click', 'fill', 'key', 'hover', 'select', 'upload', 'drag', 'scroll_to', 'scroll']);
+const focusQueue = [];
+let focusBusy = false;
+function acquireFocus(signal) {
+  signal.throwIfAborted();
+  return new Promise((resolve, reject) => {
+    const start = () => {
+      signal.removeEventListener('abort', abort);
+      focusBusy = true;
+      resolve(() => {
+        const next = focusQueue.shift();
+        if (next) next(); else focusBusy = false;
+      });
+    };
+    const abort = () => {
+      const index = focusQueue.indexOf(start);
+      if (index >= 0) focusQueue.splice(index, 1);
+      reject(new Error('COMMAND_CANCELED'));
+    };
+    if (focusBusy) {
+      focusQueue.push(start);
+      signal.addEventListener('abort', abort, { once: true });
+    } else start();
+  });
+}
 let lastError = '';
 const controller = new BrowserController(chrome, tabId => {
-  if (connected) socket.send(JSON.stringify({ type: 'detached', tabId }));
+  if (connected && socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'detached', tabId }));
 });
 const badge = text => { chrome.action.setBadgeText({ text }); chrome.action.setBadgeBackgroundColor({ color: '#185adb' }); };
 
+let resetting = Promise.resolve();
+function drainController() {
+  const tasks = [...running.values()];
+  for (const task of tasks) task.cancellation.abort();
+  resetting = resetting.then(async () => {
+    await Promise.all(tasks.map(task => task.done));
+    await controller.reset();
+  });
+  return resetting;
+}
+
 async function disconnect(forget = false) {
+  connectionGeneration++;
   connected = false;
-  running?.abort();
-  socket?.close();
+  const client = socket;
   socket = undefined;
-  await controller.reset();
+  client?.close();
+  await drainController();
   if (forget) await chrome.storage.local.remove('token');
   await chrome.storage.local.set({ enabled: false });
   await chrome.alarms.clear('reconnect');
@@ -26,16 +64,20 @@ async function disconnect(forget = false) {
 async function connect(code) {
   if (connected) return;
   if (connecting) return connecting;
+  const generation = connectionGeneration;
   connecting = (async () => {
     const { token } = await chrome.storage.local.get('token');
     if (!code && !token) throw new Error('Ask Harness for a pairing code first.');
+    await resetting;
     await controller.reset();
+    if (generation !== connectionGeneration) throw new Error('COMMAND_CANCELED: connection was canceled');
     const client = new WebSocket(`ws://127.0.0.1:${PORT}/bridge`);
     socket = client;
     await new Promise((resolve, reject) => {
       const timer = setTimeout(() => { client.close(); reject(new Error('Connection timed out. Check that the Harness plugin is running.')); }, 6000);
-      client.onopen = () => client.send(JSON.stringify({ ...(code ? { type: 'pair', code } : { type: 'auth', token }), version: chrome.runtime.getManifest().version }));
+      client.onopen = () => client.send(JSON.stringify({ ...(code ? { type: 'pair', code } : { type: 'auth', token }), version: chrome.runtime.getManifest().version, features: [PARALLEL_TABS] }));
       client.onmessage = async event => {
+        if (socket !== client) return;
         try {
           if (typeof event.data !== 'string' || event.data.length > MAX_MESSAGE) throw new Error('Invalid bridge message');
           const message = JSON.parse(event.data);
@@ -53,20 +95,47 @@ async function connect(code) {
             lastError = String(message.error).slice(0, 2000);
             reject(new Error(lastError));
           } else if (message.type === 'command' && connected) {
-            if (running) throw new Error('Browser is busy');
             if (typeof message.id !== 'string' || !Number.isFinite(message.deadline) || message.deadline <= Date.now() || message.deadline > Date.now() + 20000) throw new Error('Invalid command deadline');
+            const tabId = Number.isSafeInteger(message.args?.tabId) ? message.args.tabId : undefined;
+            if (running.has(message.id)) {
+              if (client.readyState === WebSocket.OPEN) client.send(JSON.stringify({ type: 'result', id: message.id, error: 'DUPLICATE_COMMAND_ID' }));
+              return;
+            }
+            if (tabId !== undefined && [...running.values()].some(task => task.tabId === tabId)) {
+              if (client.readyState === WebSocket.OPEN) client.send(JSON.stringify({ type: 'result', id: message.id, error: 'TAB_BUSY: another command is already running on this tab' }));
+              return;
+            }
             const cancellation = new AbortController();
-            running = cancellation;
+            let finish;
+            const done = new Promise(resolve => { finish = resolve; });
+            running.set(message.id, { cancellation, tabId, done });
             const deadline = setTimeout(() => cancellation.abort(), message.deadline - Date.now());
             let response;
-            try { response = { result: await controller.execute(message.action, message.args, cancellation.signal) }; }
+            let releaseFocus;
+            try {
+              if (focusActions.has(message.action)) releaseFocus = await acquireFocus(cancellation.signal);
+              response = { result: await controller.execute(message.action, message.args, cancellation.signal) };
+            }
             catch (error) { response = { error: String(error.message).slice(0, 2000) }; }
-            finally { clearTimeout(deadline); if (running === cancellation) running = undefined; }
+            finally {
+              clearTimeout(deadline);
+              // Keep both locks through cleanup. The result acknowledges that it
+              // is safe for the bridge to hand this tab to the next command.
+              try {
+                if (tabId !== undefined && (cancellation.signal.aborted || controller.pendingCleanup.has(tabId))) await controller.detachTab(tabId);
+              } finally {
+                running.delete(message.id);
+                releaseFocus?.();
+                finish();
+              }
+            }
             if (socket === client && client.readyState === WebSocket.OPEN) {
               const body = JSON.stringify({ type: 'result', id: message.id, ...response });
               client.send(body.length <= MAX_MESSAGE ? body : JSON.stringify({ type: 'result', id: message.id, error: 'RESULT_TOO_LARGE' }));
             }
-            if (cancellation.signal.aborted) { client.close(); await controller.reset(); }
+          } else if (message.type === 'cancel') {
+            const task = typeof message.id === 'string' ? running.get(message.id) : undefined;
+            task?.cancellation.abort();
           }
         } catch (error) {
           lastError = String(error.message);
@@ -80,8 +149,7 @@ async function connect(code) {
         if (socket === client) {
           connected = false;
           socket = undefined;
-          running?.abort();
-          controller.reset().catch(error => { lastError = error.message; });
+          drainController().catch(error => { lastError = error.message; });
           badge('');
         }
         reject(new Error(lastError || 'Connection closed. Reconnect to continue.'));
