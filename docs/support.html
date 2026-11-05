@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>支持与反馈 — dsh-chrome-use</title>
+<meta name="description" content="dsh-chrome-use 的支持页面：如何反馈问题、需要提供哪些信息、常见问题。">
+<style>
+  :root { color-scheme: light dark; }
+  body { margin: 0 auto; max-width: 46rem; padding: 2.5rem 1.25rem 4rem;
+         font: 16px/1.7 -apple-system, "PingFang SC", "Segoe UI", sans-serif; color: #1b1b1b; background: #fff; }
+  h1 { font-size: 1.6rem; margin: 0 0 .4rem; }
+  h2 { font-size: 1.12rem; margin: 2rem 0 .5rem; }
+  .lead { color: #555; margin: 0 0 1.6rem; }
+  ul { padding-left: 1.2rem; }
+  li { margin: .35rem 0; }
+  code { background: #f2f2f2; padding: .1rem .35rem; border-radius: 4px; font-size: .92em; }
+  nav a { margin-right: 1rem; }
+  footer { margin-top: 3rem; border-top: 1px solid #e5e5e5; padding-top: 1rem; color: #666; font-size: .9rem; }
+  @media (prefers-color-scheme: dark) {
+    body { color: #e8e8e8; background: #141414; }
+    .lead, footer { color: #a8a8a8; }
+    code { background: #262626; }
+    footer { border-color: #2b2b2b; }
+  }
+</style>
+</head>
+<body>
+<h1>支持与反馈</h1>
+<p class="lead">遇到问题先看下面的常见情况，仍然无法解决就提交 issue。</p>
+
+<nav>
+  <a href="./index.html">首页</a>
+  <a href="./privacy.html">隐私说明</a>
+</nav>
+
+<h2>提交问题</h2>
+<p>问题跟踪页：<a href="https://github.com/tao1020/dsh-chrome-use/issues">https://github.com/tao1020/dsh-chrome-use/issues</a></p>
+<p>请说明：Chrome 版本、扩展版本（扩展弹窗里可见）、Harness 插件版本（<code>dsh-chrome-use --version</code>）、你执行了什么、期望的结果和实际看到的结果。如果是连接问题，附上扩展弹窗显示的状态文字。</p>
+<p>不要在公开 issue 中上传配对码、令牌、私人页面截图或未清理的会话日志。</p>
+
+<h2>常见情况</h2>
+<ul>
+  <li><strong>扩展弹窗显示未连接</strong>：确认 Harness 正在运行，插件服务监听 <code>127.0.0.1:18791</code>。改过端口时需要重新配对。</li>
+  <li><strong>提示 <code>TAB_IN_USE</code></strong>：这个标签页正被另一个会话占用。等待它释放，或者换一个标签页。占用超过 10 秒仍不释放，可以让占用方调用 <code>chrome_release</code>，或在扩展弹窗点击“断开连接”。</li>
+  <li><strong>提示 <code>TAB_BUSY</code></strong>：同一个标签页上还有一条命令在跑，等它结束再发下一条。</li>
+  <li><strong>点击或输入失败</strong>：确认目标是普通 HTTP(S) 页面。Chrome 内部页面（<code>chrome://</code>、扩展商店页面）不允许调试。</li>
+  <li><strong>想让 AI 停止接管</strong>：在扩展弹窗点击“断开连接”，调试提示条会消失。</li>
+</ul>
+
+<h2>安全提示</h2>
+<p>AI 接管的页面会开启调试和日志采集，页面上的可见内容（包括已登录账号的信息）会进入会话。只在需要时接管，用完就断开。详见<a href="./privacy.html">隐私说明</a>。</p>
+
+<footer>
+  <p>English: report problems at <a href="https://github.com/tao1020/dsh-chrome-use/issues">the issue tracker</a> and include your Chrome version, extension version, Harness plugin version, and the exact error text. Never post pairing codes, tokens, or private screenshots publicly.</p>
+</footer>
+</body>
+</html>

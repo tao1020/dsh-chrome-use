@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>dsh-chrome-use — 让 DeepSeek Harness 操作你的 Chrome</title>
+<meta name="description" content="dsh-chrome-use 是一个 Chrome 扩展，配合本机的 DeepSeek Harness 插件，让 AI 读取和操作你已经登录的 Chrome 标签页。">
+<style>
+  :root { color-scheme: light dark; }
+  body { margin: 0 auto; max-width: 46rem; padding: 2.5rem 1.25rem 4rem;
+         font: 16px/1.7 -apple-system, "PingFang SC", "Segoe UI", sans-serif; color: #1b1b1b; background: #fff; }
+  h1 { font-size: 1.7rem; margin: 0 0 .4rem; }
+  h2 { font-size: 1.15rem; margin: 2.2rem 0 .6rem; }
+  .lead { color: #555; margin: 0 0 1.6rem; }
+  ul { padding-left: 1.2rem; }
+  li { margin: .3rem 0; }
+  code { background: #f2f2f2; padding: .1rem .35rem; border-radius: 4px; font-size: .92em; }
+  nav a { margin-right: 1rem; }
+  footer { margin-top: 3rem; border-top: 1px solid #e5e5e5; padding-top: 1rem; color: #666; font-size: .9rem; }
+  @media (prefers-color-scheme: dark) {
+    body { color: #e8e8e8; background: #141414; }
+    .lead, footer { color: #a8a8a8; }
+    code { background: #262626; }
+    footer { border-color: #2b2b2b; }
+  }
+</style>
+</head>
+<body>
+<h1>dsh-chrome-use</h1>
+<p class="lead">让本机的 DeepSeek Harness 用你自己的 Chrome 读取页面、点击、输入、截图和导出 PDF。</p>
+
+<nav>
+  <a href="./privacy.html">隐私说明</a>
+  <a href="./support.html">支持与反馈</a>
+  <a href="https://github.com/tao1020/dsh-chrome-use">源码仓库</a>
+</nav>
+
+<h2>它做什么</h2>
+<ul>
+  <li>复用你已经登录的标签页，不需要重新登录，也不需要输入网址。</li>
+  <li>读取页面正文或近似 Markdown、查找元素、点击、输入、悬停、拖拽、上传文件。</li>
+  <li>截图、导出 PDF、查看控制台信息、网络请求和下载记录。</li>
+  <li>多个会话可以并行操作不同标签页；同一个标签页按先后顺序排队。</li>
+</ul>
+
+<h2>怎么用</h2>
+<ul>
+  <li>在 Chrome 应用商店安装本扩展。</li>
+  <li>在本机安装 DeepSeek Harness 插件：<code>npm install -g dsh-chrome-use</code>，或用 Harness 的插件管理安装。</li>
+  <li>打开扩展弹窗，输入 Harness 给出的一次性配对码，之后即可在会话中使用 <code>chrome_*</code> 工具。</li>
+</ul>
+
+<h2>权限与数据</h2>
+<p>扩展需要 <code>debugger</code>、<code>tabs</code>、<code>tabGroups</code>、<code>storage</code>、<code>alarms</code> 和 <code>downloads</code> 权限，分别用于通过 DevTools 协议操作页面、选择标签页、整理标签组、保存配对状态、恢复连接和读取下载记录。扩展只连接本机 <code>127.0.0.1:18791</code>，不向作者的服务器发送任何数据。详见<a href="./privacy.html">隐私说明</a>。</p>
+
+<footer>
+  <p>English: dsh-chrome-use is a Chrome extension that lets your local DeepSeek Harness plugin read and drive Chrome tabs you already have open. It talks only to <code>127.0.0.1:18791</code> and sends nothing to the author's servers. See the <a href="./privacy.html">privacy policy</a>.</p>
+</footer>
+</body>
+</html>
