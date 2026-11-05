@@ -22,7 +22,7 @@ export const chromeUseSkill = {
 ## 操作流程
 
 1. 打开新页面用 chrome_open，必须带 group（1-40 字符）。同一系列任务复用同一个组名，页面会进同一个 Chrome 标签页组。
-2. 操作已有页面时，先用 chrome_tabs 找到标签页，再用 chrome_claim 占用。一个标签页同时只能被一个会话占用。
+2. 操作已有页面时，先用 chrome_tabs 找到标签页，再用 chrome_claim 占用。一个标签页同时只能被一个会话占用；不同会话可以同时操作不同标签页。
 3. 操作前先 chrome_snapshot 获取元素 ref。读正文用 format="text" 或 format="markdown"（不返回 ref，也不清空旧 ref）；元素太多或找不到时用 chrome_find 按 name/role 查找。导航或页面变化后旧 ref 会失效，需要重新读取，不能猜 ref。
 4. 用 chrome_click（count=2 双击，button=right 右键）、chrome_fill、chrome_key（支持 meta+a、ctrl+shift+k 等组合）、chrome_scroll 执行操作；填写不会自动提交表单。
 5. 悬停菜单用 chrome_hover；拖拽用 chrome_drag（放置区没有 ref 时用 toText 按文字找）；原生下拉用 chrome_select。
@@ -36,8 +36,10 @@ export const chromeUseSkill = {
 
 ## 注意
 
-- TAB_IN_USE 表示其他会话占用了该页：让原会话释放，或新开页面。
-- 超时或取消不会自动重放操作；重连后先读取页面，确认之前的操作是否已经发生。
+- chrome_claim 遇到其他会话占用时，按先来后到排队，最多等 10 秒。TAB_IN_USE 表示等待超时：让原会话释放，或新开页面。不要循环争抢；完成任务后及时 chrome_release。
+- TAB_BUSY 表示这个标签页还有命令或取消清理在运行，等它结束再操作。不同标签页的读取、等待可以并行；点击、输入、拖拽、激活等前台操作会自动排队，排队计入命令超时。
+- 超时或取消会请求停止当前命令，清理确认前保留操作锁，不会自动重放。其他页面通常不受影响；清理超过 8 秒或使用旧版扩展时会断开连接。重新占用并读取页面，确认之前的操作是否已经发生。
+- 锁只能协调本插件的操作，不能阻止用户手动切页、其他工具或网页脚本改变焦点。
 - 只支持普通 HTTP(S) 页面；不支持 chrome:// 内部页、本地文件、扩展页和跨域 iframe。
 - 文件上传只接受 home 或临时目录下的普通文件，隐藏路径会被拒绝；只上传用户点名的文件。
 - 拖拽完成后截图或读页面确认结果；HTML5 拖拽在页面内合成事件，个别站点可能不认。

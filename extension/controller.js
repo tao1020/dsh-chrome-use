@@ -95,21 +95,42 @@ export class BrowserController {
     this.api = api;
     this.detached = detached;
     this.attached = new Map();
+    // Native Chrome promises outlive our timeouts. Do not attach a new session
+    // while a previous native cleanup can still detach it.
+    this.pendingCleanup = new Map();
     api.debugger.onDetach.addListener(({ tabId }) => {
-      this.attached.delete(tabId);
-      detached(tabId);
+      if (this.attached.delete(tabId)) detached(tabId);
     });
     api.tabs.onRemoved.addListener(tabId => {
-      this.attached.delete(tabId);
-      detached(tabId);
+      if (this.attached.delete(tabId)) detached(tabId);
     });
     api.debugger.onEvent.addListener((target, method, params) => this.event(target, method, params));
   }
 
+  trackCleanup(tabId, promise) {
+    this.pendingCleanup.set(tabId, promise);
+    promise.then(() => {
+      if (this.pendingCleanup.get(tabId) === promise) this.pendingCleanup.delete(tabId);
+    }, () => {}); // A failed cleanup stays quarantined until the worker is reloaded.
+    return promise;
+  }
+
   async reset() {
-    const tabs = [...this.attached.keys()];
-    this.attached.clear();
-    await Promise.all(tabs.map(tabId => bounded(this.api.debugger.detach({ tabId }), undefined, 'detach', 1000).catch(() => {}))); // Already detached/closed is safe.
+    // Keep unresolved native cleanup quarantined, but never hang reconnection.
+    const tabs = new Set([...this.attached.keys(), ...this.pendingCleanup.keys()]);
+    await Promise.all([...tabs].map(tabId => this.detachTab(tabId).catch(() => {})));
+  }
+
+  async detachTab(tabId) {
+    const attached = this.attached.delete(tabId);
+    const cleanup = attached
+      ? this.trackCleanup(tabId, this.api.debugger.detach({ tabId }))
+      : this.pendingCleanup.get(tabId);
+    if (!cleanup) return;
+    // Explicit detach need not emit onDetach. Removing state first suppresses
+    // duplicate events; notify only after native cleanup, before the result.
+    await bounded(cleanup, undefined, 'detach', 1000);
+    if (attached) this.detached(tabId);
   }
 
   event({ tabId }, method, params) {
@@ -163,23 +184,26 @@ export class BrowserController {
   }
 
   async attach(tabId, signal, newBlankTab = false) {
+    const cleanup = this.pendingCleanup.get(tabId);
+    if (cleanup) await bounded(cleanup, signal, 'previous tab cleanup');
     const tab = await bounded(this.api.tabs.get(tabId), signal, 'tabs.get');
     const currentUrl = tab.url || tab.pendingUrl || 'about:blank';
     if (!(newBlankTab && currentUrl === 'about:blank')) pageUrl(currentUrl);
     signal.throwIfAborted();
     if (this.attached.has(tabId)) return;
-    // Chrome promises cannot be canceled. Clean up even if attach finishes after our timeout.
-    let abandoned = false;
+    // Chrome promises cannot be canceled. Quarantine the entire late-attach
+    // cleanup so it cannot detach a later claim on the same tab.
     const attachment = this.api.debugger.attach({ tabId }, '1.3');
-    attachment.then(() => { if (abandoned || signal.aborted) this.api.debugger.detach({ tabId }).catch(() => {}); }, () => {});
     try { await bounded(attachment, signal, 'attach'); }
-    catch (error) { abandoned = true; throw error; }
+    catch (error) {
+      this.trackCleanup(tabId, attachment.then(() => this.api.debugger.detach({ tabId }), () => {}));
+      throw error;
+    }
     this.attached.set(tabId, { refs: new Map(), revision: 0, logs: [], logSeq: 0, requests: [], dialog: null, loadResolve: null, lastNetworkActivity: Date.now(), networkInFlight: 0, networkRequests: new Map() });
     try {
       for (const domain of ['Page', 'DOM', 'Accessibility', 'Runtime', 'Network']) await this.command(tabId, `${domain}.enable`, {}, signal);
     } catch (error) {
-      this.attached.delete(tabId);
-      await bounded(this.api.debugger.detach({ tabId }), undefined, 'detach', 1000).catch(() => {});
+      await this.detachTab(tabId);
       throw error;
     }
   }
@@ -364,8 +388,7 @@ export class BrowserController {
         if (result.errorText) throw new Error(result.errorText);
         return { tabId: tab.id, url, navigationStarted: true, group: group ?? null, ...(groupError ? { groupError } : {}) };
       } catch (error) {
-        this.attached.delete(tab.id);
-        await bounded(this.api.debugger.detach({ tabId: tab.id }), undefined, 'detach', 1000).catch(() => {});
+        await this.detachTab(tab.id);
         throw new Error(`OPEN_FAILED (tab ${tab.id} remains open): ${error.message}`);
       }
     }
@@ -413,8 +436,7 @@ export class BrowserController {
     }
     if (!this.attached.has(tabId)) throw new Error('TAB_NOT_ATTACHED: claim the tab again');
     if (action === 'release') {
-      await bounded(this.api.debugger.detach({ tabId }), signal, 'detach');
-      this.attached.delete(tabId);
+      await this.detachTab(tabId);
       return { tabId, released: true };
     }
     const tabInfo = await bounded(this.api.tabs.get(tabId), signal, 'tabs.get');
