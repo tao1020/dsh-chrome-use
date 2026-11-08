@@ -25,6 +25,12 @@ async function act(action, extra = {}) {
     if (result.error && !result.connected) $('error').textContent = result.error;
   } catch (error) { $('error').textContent = error.message; }
 }
+const foreground = $('foreground');
+chrome.storage.local.get('foregroundMode').then(
+  ({ foregroundMode }) => { foreground.checked = foregroundMode !== false; },
+  () => {}, // Keep the default (foreground on) when settings cannot be read.
+);
+foreground.addEventListener('change', () => { chrome.storage.local.set({ foregroundMode: foreground.checked }); });
 $('pair-form').addEventListener('submit', async event => { event.preventDefault(); await act('connect', { code: $('code').value }); $('code').value = ''; });
 $('disconnect').addEventListener('click', () => act('disconnect'));
 act('status');

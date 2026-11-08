@@ -6,30 +6,42 @@ let connected = false;
 let connecting;
 let connectionGeneration = 0;
 const running = new Map();
-const focusActions = new Set(['activate', 'close', 'click', 'fill', 'key', 'hover', 'select', 'upload', 'drag', 'scroll_to', 'scroll']);
-const focusQueue = [];
-let focusBusy = false;
-function acquireFocus(signal) {
-  signal.throwIfAborted();
+// These actions make their tab the current tab of its window, and Chrome only
+// delivers synthesized input to the current tab. Queue them across tabs so two
+// commands cannot switch the same window underneath each other. They do not
+// touch window focus, so the user keeps typing in whichever app is in front.
+const inputActions = new Set(['activate', 'close', 'click', 'fill', 'key', 'hover', 'select', 'upload', 'drag', 'scroll_to', 'scroll']);
+const inputQueue = [];
+let inputBusy = false;
+function acquireInput(signal) {
+  // A command can now be canceled while the mode is read, so keep one stable
+  // error code instead of the DOMException throwIfAborted would use.
+  if (signal.aborted) throw new Error('COMMAND_CANCELED');
   return new Promise((resolve, reject) => {
     const start = () => {
       signal.removeEventListener('abort', abort);
-      focusBusy = true;
+      inputBusy = true;
       resolve(() => {
-        const next = focusQueue.shift();
-        if (next) next(); else focusBusy = false;
+        const next = inputQueue.shift();
+        if (next) next(); else inputBusy = false;
       });
     };
     const abort = () => {
-      const index = focusQueue.indexOf(start);
-      if (index >= 0) focusQueue.splice(index, 1);
+      const index = inputQueue.indexOf(start);
+      if (index >= 0) inputQueue.splice(index, 1);
       reject(new Error('COMMAND_CANCELED'));
     };
-    if (focusBusy) {
-      focusQueue.push(start);
+    if (inputBusy) {
+      inputQueue.push(start);
       signal.addEventListener('abort', abort, { once: true });
     } else start();
   });
+}
+// Foreground mode is the default, matching the popup and the extension before
+// 0.6.3. Reading it per command keeps a popup change effective immediately.
+async function applyMode() {
+  const { foregroundMode } = await chrome.storage.local.get('foregroundMode');
+  controller.foregroundMode = foregroundMode !== false;
 }
 let lastError = '';
 const controller = new BrowserController(chrome, (tabId, reason) => {
@@ -113,9 +125,15 @@ async function connect(code) {
             running.set(message.id, { cancellation, tabId, done });
             const deadline = setTimeout(() => cancellation.abort(), message.deadline - Date.now());
             let response;
-            let releaseFocus;
+            let releaseInput;
             try {
-              if (focusActions.has(message.action)) releaseFocus = await acquireFocus(cancellation.signal);
+              if (inputActions.has(message.action)) {
+                // A settings read failure keeps the last known mode rather than
+                // failing the action; lastError still surfaces it in the popup.
+                try { await applyMode(); }
+                catch (error) { lastError = error.message; }
+                releaseInput = await acquireInput(cancellation.signal);
+              }
               response = { result: await controller.execute(message.action, message.args, cancellation.signal) };
             }
             catch (error) { response = { error: String(error.message).slice(0, 2000) }; }
@@ -127,7 +145,7 @@ async function connect(code) {
                 if (tabId !== undefined && (cancellation.signal.aborted || controller.pendingCleanup.has(tabId))) await controller.detachTab(tabId);
               } finally {
                 running.delete(message.id);
-                releaseFocus?.();
+                releaseInput?.();
                 finish();
               }
             }

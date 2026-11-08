@@ -34,7 +34,7 @@ async function fixture(t, initial) {
     } },
     action: { setBadgeText() {}, setBadgeBackgroundColor() {} },
     alarms: { onAlarm: event('alarm'), create: async name => alarms.add(name), clear: async name => alarms.delete(name) },
-    tabs: { onRemoved: event('removed'), query: async () => [], get: async id => ({ id, url: 'https://example.com/' }) },
+    tabs: { onRemoved: event('removed'), query: async () => [], get: async id => ({ id, url: 'https://example.com/' }), update: async (id, info) => ({ id, ...info }) },
     debugger: { onDetach: event('detach'), onEvent: event('debugEvent'), attach: async () => {}, detach: async () => {}, sendCommand: async () => ({}) },
   };
   globalThis.WebSocket = class {
@@ -69,7 +69,7 @@ async function fixture(t, initial) {
 }
 
 test('worker startup restores saved pairing; disconnect disables automatic reconnect', async t => {
-  const { sockets, alarms, stored, message, listeners, settled } = await fixture(t, { token: 'a'.repeat(64), enabled: true });
+  const { sockets, alarms, stored, message, listeners, settled } = await fixture(t, { token: 'a'.repeat(64), enabled: true, foregroundMode: false });
   assert.equal(sockets.length, 1);
   assert.equal(sockets[0].sent[0].type, 'auth');
   assert.equal(sockets[0].sent[0].code, undefined);
@@ -113,15 +113,16 @@ test('Disconnect cancels a Connect that has not created its socket yet', async t
   assert.equal(sockets.length, 0);
 });
 
-test('focus-changing commands are FIFO across tabs while reads remain parallel', async t => {
-  const { api, command, settled } = await fixture(t, { token: 'a'.repeat(64), enabled: true });
+test('tab-switching commands are FIFO across tabs while reads remain parallel', async t => {
+  const { api, command, settled } = await fixture(t, { token: 'a'.repeat(64), enabled: true, foregroundMode: false });
   for (const tabId of [7, 8, 9, 10]) await command(`claim-${tabId}`, 'claim', { tabId });
   let release;
   const gate = new Promise(resolve => { release = resolve; });
   const focused = [];
-  api.debugger.sendCommand = async ({ tabId }, method) => {
-    if (method === 'Page.bringToFront') { focused.push(tabId); if (tabId === 7) await gate; }
-    return {};
+  api.tabs.update = async (id, info) => {
+    focused.push(id);
+    if (id === 7) await gate;
+    return { id, ...info };
   };
   const first = command('first', 'key', { tabId: 7, key: 'Enter' });
   await until(() => focused.length === 1);
@@ -136,14 +137,15 @@ test('focus-changing commands are FIFO across tabs while reads remain parallel',
   assert.deepEqual(focused, [7, 8, 9]);
 });
 
-test('cancellation holds tab and focus until detach completes and acknowledges cleanup', async t => {
-  const { api, command, sockets, settled } = await fixture(t, { token: 'a'.repeat(64), enabled: true });
+test('cancellation holds tab and input lock until detach completes and acknowledges cleanup', async t => {
+  const { api, command, sockets, settled } = await fixture(t, { token: 'a'.repeat(64), enabled: true, foregroundMode: false });
   for (const tabId of [7, 8]) await command(`claim-${tabId}`, 'claim', { tabId });
   const socket = sockets[0];
   const focused = [];
-  api.debugger.sendCommand = async ({ tabId }, method) => {
-    if (method === 'Page.bringToFront') { focused.push(tabId); if (tabId === 7) return new Promise(() => {}); }
-    return {};
+  api.tabs.update = async (id, info) => {
+    focused.push(id);
+    if (id === 7) return new Promise(() => {});
+    return { id, ...info };
   };
   let detached = false;
   let finishDetach;
@@ -168,13 +170,13 @@ test('cancellation holds tab and focus until detach completes and acknowledges c
 });
 
 test('unresolved cancellation cleanup closes the socket without acknowledging success', async t => {
-  const { api, command, sockets } = await fixture(t, { token: 'a'.repeat(64), enabled: true });
+  const { api, command, sockets } = await fixture(t, { token: 'a'.repeat(64), enabled: true, foregroundMode: false });
   await command('claim', 'claim', { tabId: 7 });
   let started = false;
   let finishDetach;
-  api.debugger.sendCommand = async (_, method) => {
-    if (method === 'Page.bringToFront') { started = true; return new Promise(() => {}); }
-    return {};
+  api.tabs.update = async () => {
+    started = true;
+    return new Promise(() => {});
   };
   api.debugger.detach = () => new Promise(resolve => { finishDetach = resolve; });
   const socket = sockets[0];
@@ -188,15 +190,16 @@ test('unresolved cancellation cleanup closes the socket without acknowledging su
   } finally { finishDetach(); }
 });
 
-test('canceling a queued focus command removes it without blocking the next tab', async t => {
-  const { api, command, sockets } = await fixture(t, { token: 'a'.repeat(64), enabled: true });
+test('canceling a queued input command removes it without blocking the next tab', async t => {
+  const { api, command, sockets } = await fixture(t, { token: 'a'.repeat(64), enabled: true, foregroundMode: false });
   for (const tabId of [7, 8, 9]) await command(`claim-${tabId}`, 'claim', { tabId });
   let release;
   const gate = new Promise(resolve => { release = resolve; });
   const focused = [];
-  api.debugger.sendCommand = async ({ tabId }, method) => {
-    if (method === 'Page.bringToFront') { focused.push(tabId); if (tabId === 7) await gate; }
-    return {};
+  api.tabs.update = async (id, info) => {
+    focused.push(id);
+    if (id === 7) await gate;
+    return { id, ...info };
   };
   const first = command('first', 'key', { tabId: 7, key: 'Enter' });
   await until(() => focused.length === 1);
@@ -212,12 +215,12 @@ test('canceling a queued focus command removes it without blocking the next tab'
 });
 
 test('reconnect drains old command cleanup before accepting a new socket', async t => {
-  const { api, command, sockets, message, settled } = await fixture(t, { token: 'a'.repeat(64), enabled: true });
+  const { api, command, sockets, message, settled } = await fixture(t, { token: 'a'.repeat(64), enabled: true, foregroundMode: false });
   await command('claim', 'claim', { tabId: 7 });
   let started = false;
-  api.debugger.sendCommand = async (_, method) => {
-    if (method === 'Page.bringToFront') { started = true; return new Promise(() => {}); }
-    return {};
+  api.tabs.update = async () => {
+    started = true;
+    return new Promise(() => {});
   };
   let finishDetach;
   let detaching = false;
@@ -237,8 +240,31 @@ test('reconnect drains old command cleanup before accepting a new socket', async
   assert.equal(sockets[1].sent.find(item => item.id === 'new-claim').result.attached, true);
 });
 
+test('foreground mode makes input raise the Chrome window', async t => {
+  const { api, command } = await fixture(t, { token: 'a'.repeat(64), enabled: true, foregroundMode: true });
+  await command('claim', 'claim', { tabId: 7 });
+  const methods = [];
+  api.debugger.sendCommand = async (target, method) => { methods.push(method); return {}; };
+  api.tabs.update = async (id, info) => { methods.push('tabs.update'); return { id, ...info }; };
+  await command('key', 'key', { tabId: 7, key: 'Enter' });
+  assert.ok(methods.includes('Page.bringToFront'));
+  assert.ok(!methods.includes('tabs.update'));
+});
+
+test('background silent mode switches the tab without raising the window', async t => {
+  const { api, command } = await fixture(t, { token: 'a'.repeat(64), enabled: true, foregroundMode: false });
+  await command('claim', 'claim', { tabId: 7 });
+  const methods = [];
+  api.debugger.sendCommand = async (target, method) => { methods.push(method); return {}; };
+  const update = api.tabs.update;
+  api.tabs.update = async (id, info) => { methods.push('tabs.update'); return update(id, info); };
+  await command('key', 'key', { tabId: 7, key: 'Enter' });
+  assert.ok(methods.includes('tabs.update'));
+  assert.ok(!methods.includes('Page.bringToFront'));
+});
+
 test('commands without a tab run together instead of being rejected as busy', async t => {
-  const { sockets } = await fixture(t, { token: 'a'.repeat(64), enabled: true });
+  const { sockets } = await fixture(t, { token: 'a'.repeat(64), enabled: true, foregroundMode: false });
   const socket = sockets[0];
   let started = 0;
   let release;
