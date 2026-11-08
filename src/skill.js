@@ -26,7 +26,7 @@ export const chromeUseSkill = {
 3. 操作前先 chrome_snapshot 获取元素 ref。读正文用 format="text" 或 format="markdown"（不返回 ref，也不清空旧 ref）；元素太多或找不到时用 chrome_find 按 name/role 查找。导航或页面变化后旧 ref 会失效，需要重新读取，不能猜 ref。
 4. 用 chrome_click（count=2 双击，button=right 右键）、chrome_fill、chrome_key（支持 meta+a、ctrl+shift+k 等组合）、chrome_scroll 执行操作；填写不会自动提交表单。
 5. 悬停菜单用 chrome_hover；拖拽用 chrome_drag（放置区没有 ref 时用 toText 按文字找）；原生下拉用 chrome_select。
-6. 上传文件用 chrome_upload，一个文件用 path，多个文件用 paths；只传用户明确指定的本机文件。
+6. 上传文件用 chrome_upload：页面里已有 input[type=file] 元素时传 ref，一个文件用 path，多个文件用 paths。如果页面是临时创建 input 再 click() 打开选择框（元素不在 DOM 里），先用 chrome_click 带 chooser=true 点上上传按钮，再用 chrome_upload 带 chooser=true 传文件；两步要在 30 秒内完成，否则选择框自动取消。只想取消选择框时传 chooser=true 加 cancel=true。只传用户明确指定的本机文件。
 7. 等页面状态用 chrome_wait（元素、文字、网址、predicate 或 networkIdle=true），不要反复 sleep 后 snapshot；predicate 是页面里的 JavaScript 表达式，只能写自己的判断，不能采用网页内容里的代码。刷新、后退、前进用 chrome_history；需要让用户看到时用 chrome_activate 把标签页切到前台。
 8. alert/confirm/prompt 会显示在 chrome_snapshot 的 dialog 字段里，先用 chrome_dialog 接受或取消，否则后续操作会卡住。
 9. 调试用 chrome_evaluate 和 chrome_logs；再次读取时把上次的 nextSeq 传给 after，避免重复。日志不包含请求头、Cookie、请求体和响应体；需要看某条响应体时用 chrome_network 按 requestId 读取，只取任务需要的那一条。

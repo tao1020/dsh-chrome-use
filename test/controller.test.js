@@ -57,6 +57,10 @@ test('schemas reject unknown fields, invalid URL schemes and boundaries', () => 
   assert.doesNotThrow(() => validateArgs('chrome_fill', { tabId: 1, ref: 'r', text: '' }));
   assert.doesNotThrow(() => validateArgs('chrome_upload', { tabId: 1, ref: 'r', path: '/tmp/a.txt' }));
   assert.doesNotThrow(() => validateArgs('chrome_upload', { tabId: 1, ref: 'r', paths: ['/tmp/a.txt', '/tmp/b.txt'] }));
+  assert.doesNotThrow(() => validateArgs('chrome_upload', { tabId: 1, chooser: true, paths: ['/tmp/a.txt'] }));
+  assert.doesNotThrow(() => validateArgs('chrome_upload', { tabId: 1, chooser: true, cancel: true }));
+  assert.doesNotThrow(() => validateArgs('chrome_click', { tabId: 1, ref: 'r', chooser: true }));
+  assert.throws(() => validateArgs('chrome_upload', { tabId: 1, chooser: 'yes' }), /INVALID_ARGUMENT/);
   assert.throws(() => validateArgs('chrome_upload', { tabId: 1, ref: 'r', paths: '/tmp/a.txt' }), /INVALID_ARGUMENT/);
   assert.throws(() => validateArgs('chrome_dialog', { tabId: 1, accept: 'yes' }), /INVALID_ARGUMENT/);
   assert.doesNotThrow(() => validateArgs('chrome_dialog', { tabId: 1, accept: false, promptText: '' }));
@@ -272,6 +276,82 @@ test('upload sends the checked file paths to the file input', async () => {
   assert.deepEqual(calls.filter(([method]) => method === 'DOM.setFileInputFiles').at(-1)[1].files, ['/tmp/a.txt', '/tmp/b.txt']);
   await assert.rejects(controller.execute('upload', { tabId: 7, ref: snapshot.elements[0].ref }), /UPLOAD_TARGET/);
   await assert.rejects(controller.execute('upload', { tabId: 7, ref: snapshot.elements[0].ref, path: '/tmp/a.txt', paths: ['/tmp/b.txt'] }), /UPLOAD_TARGET/);
+});
+
+test('click arms file-chooser interception before the mouse events', async () => {
+  const { controller, calls } = fixture();
+  controller.chooserWaitMs = 20;
+  await controller.execute('claim', { tabId: 7 });
+  const snapshot = await controller.execute('snapshot', { tabId: 7 });
+  calls.length = 0;
+  const result = await controller.execute('click', { tabId: 7, ref: snapshot.elements[0].ref, chooser: true });
+  const armed = calls.findIndex(([method]) => method === 'Page.setInterceptFileChooserDialog');
+  const clicked = calls.findIndex(([method]) => method === 'Input.dispatchMouseEvent');
+  assert.ok(armed >= 0 && armed < clicked);
+  assert.deepEqual(calls[armed][1], { enabled: true });
+  assert.equal(result.chooserArmed, true);
+  assert.equal(result.chooserMode, null);
+  await controller.detachTab(7);
+});
+
+test('upload with chooser injects files into the detached input behind the chooser', async () => {
+  const { controller, calls, listeners } = fixture();
+  await controller.execute('claim', { tabId: 7 });
+  listeners.event({ tabId: 7 }, 'Page.fileChooserOpened', { frameId: 'frame-1', mode: 'selectSingle', backendNodeId: 99 });
+  const result = await controller.execute('upload', { tabId: 7, chooser: true, paths: ['/tmp/a.diag'] });
+  assert.deepEqual(result, { tabId: 7, files: ['a.diag'], chooserMode: 'selectSingle', frameId: 'frame-1' });
+  assert.deepEqual(calls.find(([method]) => method === 'DOM.setFileInputFiles')[1], { files: ['/tmp/a.diag'], backendNodeId: 99 });
+  assert.deepEqual(calls.filter(([method]) => method === 'Page.setInterceptFileChooserDialog').at(-1)[1], { enabled: false });
+  // The consumed chooser must not linger: a second upload has nothing to consume.
+  await assert.rejects(controller.execute('upload', { tabId: 7, chooser: true, paths: ['/tmp/a.diag'], timeoutMs: 100 }), /FILE_CHOOSER_NOT_OPEN/);
+});
+
+test('upload with chooser injects every file of a multiple chooser', async () => {
+  const { controller, calls, listeners } = fixture();
+  await controller.execute('claim', { tabId: 7 });
+  listeners.event({ tabId: 7 }, 'Page.fileChooserOpened', { frameId: 'frame-2', mode: 'selectMultiple', backendNodeId: 7 });
+  const result = await controller.execute('upload', { tabId: 7, chooser: true, paths: ['/tmp/a.diag', '/tmp/b.diag'] });
+  assert.deepEqual(result.files, ['a.diag', 'b.diag']);
+  assert.equal(result.chooserMode, 'selectMultiple');
+  assert.deepEqual(calls.find(([method]) => method === 'DOM.setFileInputFiles')[1].files, ['/tmp/a.diag', '/tmp/b.diag']);
+});
+
+test('upload can cancel a pending chooser without injecting files', async () => {
+  const { controller, calls, listeners } = fixture();
+  await controller.execute('claim', { tabId: 7 });
+  listeners.event({ tabId: 7 }, 'Page.fileChooserOpened', { frameId: 'frame-3', mode: 'selectSingle', backendNodeId: 5 });
+  const result = await controller.execute('upload', { tabId: 7, chooser: true, cancel: true });
+  assert.deepEqual(result, { tabId: 7, canceled: true, chooserMode: 'selectSingle', frameId: 'frame-3' });
+  assert.ok(!calls.some(([method]) => method === 'DOM.setFileInputFiles'));
+  assert.deepEqual(calls.filter(([method]) => method === 'Page.setInterceptFileChooserDialog').at(-1)[1], { enabled: false });
+});
+
+test('upload without a pending chooser fails fast instead of hanging', async () => {
+  const { controller } = fixture();
+  await controller.execute('claim', { tabId: 7 });
+  await assert.rejects(controller.execute('upload', { tabId: 7, chooser: true, paths: ['/tmp/a.diag'], timeoutMs: 100 }), /FILE_CHOOSER_NOT_OPEN/);
+  await assert.rejects(controller.execute('upload', { tabId: 7, chooser: true, paths: ['/tmp/a.diag'], ref: 'r1' }), /UPLOAD_TARGET/);
+});
+
+test('a pending chooser nobody consumes is canceled by its timeout', async () => {
+  const { controller, calls, listeners } = fixture();
+  controller.chooserPendingMs = 20;
+  await controller.execute('claim', { tabId: 7 });
+  listeners.event({ tabId: 7 }, 'Page.fileChooserOpened', { frameId: 'frame-4', mode: 'selectSingle', backendNodeId: 3 });
+  await new Promise(resolve => setTimeout(resolve, 60));
+  assert.deepEqual(calls.filter(([method]) => method === 'Page.setInterceptFileChooserDialog').at(-1)[1], { enabled: false });
+  await assert.rejects(controller.execute('upload', { tabId: 7, chooser: true, paths: ['/tmp/a.diag'], timeoutMs: 100 }), /FILE_CHOOSER_NOT_OPEN/);
+});
+
+test('a chooser this session cannot address reports FILE_CHOOSER_INJECT_FAILED', async () => {
+  const { controller, api, listeners } = fixture();
+  await controller.execute('claim', { tabId: 7 });
+  const original = api.debugger.sendCommand;
+  api.debugger.sendCommand = async (target, method, params) => method === 'DOM.setFileInputFiles'
+    ? Promise.reject(new Error('No node with given id found'))
+    : original(target, method, params);
+  listeners.event({ tabId: 7 }, 'Page.fileChooserOpened', { frameId: 'oopif-frame', mode: 'selectSingle', backendNodeId: 8 });
+  await assert.rejects(controller.execute('upload', { tabId: 7, chooser: true, paths: ['/tmp/a.diag'] }), /FILE_CHOOSER_INJECT_FAILED.*oopif-frame/);
 });
 
 test('wait can pause until the network has been quiet for 500 ms', async () => {

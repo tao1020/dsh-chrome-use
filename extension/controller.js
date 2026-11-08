@@ -118,14 +118,22 @@ export class BrowserController {
     // Mirrors the popup's default: foreground raises the Chrome window so input
     // always lands. The background silent mode never touches window focus.
     this.foregroundMode = true;
+    // A page that builds input[type=file] and calls click() never puts a node
+    // in the DOM, so the chooser is the only handle. Keep interception armed
+    // just long enough for the click, then let chrome_upload consume it.
+    this.chooserArmMs = 5000;
+    this.chooserPendingMs = 30000;
+    this.chooserWaitMs = 500;
     this.attached = new Map();
     // Native Chrome promises outlive our timeouts. Do not attach a new session
     // while a previous native cleanup can still detach it.
     this.pendingCleanup = new Map();
     api.debugger.onDetach.addListener(({ tabId }, reason) => {
+      clearTimeout(this.attached.get(tabId)?.chooserTimer);
       if (this.attached.delete(tabId)) detached(tabId, reason);
     });
     api.tabs.onRemoved.addListener(tabId => {
+      clearTimeout(this.attached.get(tabId)?.chooserTimer);
       if (this.attached.delete(tabId)) detached(tabId, 'target_closed');
     });
     api.debugger.onEvent.addListener((target, method, params) => this.event(target, method, params));
@@ -146,6 +154,7 @@ export class BrowserController {
   }
 
   async detachTab(tabId) {
+    clearTimeout(this.attached.get(tabId)?.chooserTimer);
     const attached = this.attached.delete(tabId);
     const cleanup = attached
       ? this.trackCleanup(tabId, this.api.debugger.detach({ tabId }))
@@ -185,6 +194,13 @@ export class BrowserController {
     if (method === 'Page.loadEventFired' && state.loadResolve) { const resolve = state.loadResolve; state.loadResolve = null; resolve(true); }
     if (method === 'Page.javascriptDialogOpening') state.dialog = { type: params.type, message: clip(params.message, 2000), defaultPrompt: clip(params.defaultPrompt, 1000) };
     if (method === 'Page.javascriptDialogClosed') state.dialog = null;
+    if (method === 'Page.fileChooserOpened') {
+      clearTimeout(state.chooserTimer);
+      state.chooser = { frameId: params.frameId ?? null, mode: params.mode ?? 'selectSingle', backendNodeId: params.backendNodeId ?? null, at: Date.now() };
+      // Leaving interception on would swallow later choosers on this tab, so an
+      // unconsumed chooser cancels itself instead of hanging the page.
+      state.chooserTimer = setTimeout(() => { this.cancelChooser(tabId).catch(() => {}); }, this.chooserPendingMs);
+    }
     if (method === 'Page.frameNavigated' && !params.frame.parentId || method === 'DOM.documentUpdated') {
       state.refs.clear();
       state.revision++;
@@ -223,7 +239,7 @@ export class BrowserController {
       this.trackCleanup(tabId, attachment.then(() => this.api.debugger.detach({ tabId }), () => {}));
       throw attachFailure(error, tabId, currentUrl, 'attach');
     }
-    this.attached.set(tabId, { refs: new Map(), revision: 0, logs: [], logSeq: 0, requests: [], dialog: null, loadResolve: null, lastNetworkActivity: Date.now(), networkInFlight: 0, networkRequests: new Map() });
+    this.attached.set(tabId, { refs: new Map(), revision: 0, logs: [], logSeq: 0, requests: [], dialog: null, chooser: null, chooserTimer: null, loadResolve: null, lastNetworkActivity: Date.now(), networkInFlight: 0, networkRequests: new Map() });
     let stage = 'attach';
     try {
       for (const domain of ['Page', 'DOM', 'Accessibility', 'Runtime', 'Network']) {
@@ -292,6 +308,37 @@ export class BrowserController {
       }
       if (state !== 'hidden') return;
       if (Date.now() >= deadline) throw new Error('PAGE_HIDDEN: this tab reports visibilityState=hidden (its Chrome window is minimized or covered), so synthesized input would be dropped. Call chrome_activate to bring the tab forward, then retry.');
+      await sleep(50, signal);
+    }
+  }
+
+  // Arming must happen before the click is dispatched: once Chrome shows or
+  // drops the dialogue there is nothing left to inject into.
+  async armChooser(tabId, signal) {
+    const state = this.attached.get(tabId);
+    clearTimeout(state.chooserTimer);
+    state.chooser = null;
+    await this.command(tabId, 'Page.setInterceptFileChooserDialog', { enabled: true }, signal);
+    state.chooserTimer = setTimeout(() => { this.cancelChooser(tabId).catch(() => {}); }, this.chooserArmMs);
+  }
+
+  // Disabling interception is also how a pending chooser is dismissed.
+  async cancelChooser(tabId) {
+    const state = this.attached.get(tabId);
+    if (!state) return;
+    clearTimeout(state.chooserTimer);
+    state.chooserTimer = null;
+    state.chooser = null;
+    await this.api.debugger.sendCommand({ tabId }, 'Page.setInterceptFileChooserDialog', { enabled: false }).catch(() => {});
+  }
+
+  async waitChooser(tabId, timeoutMs, signal) {
+    const deadline = Date.now() + timeoutMs;
+    while (true) {
+      const state = this.attached.get(tabId);
+      if (!state) throw new Error('TAB_NOT_ATTACHED: claim the tab again');
+      if (state.chooser) return state.chooser;
+      if (Date.now() >= deadline) return null;
       await sleep(50, signal);
     }
   }
@@ -617,6 +664,7 @@ export class BrowserController {
         const count = action === 'fill' ? 1 : (args.count ?? 1);
         const buttons = button === 'left' ? 1 : button === 'right' ? 2 : 4;
         const state = this.attached.get(tabId);
+        if (args.chooser) await this.armChooser(tabId, signal);
         const dispatched = Promise.all([
           cdp('Input.dispatchMouseEvent', { type: 'mouseMoved', x: position.x, y: position.y, buttons: 0 }),
           cdp('Input.dispatchMouseEvent', { type: 'mousePressed', x: position.x, y: position.y, button, buttons, clickCount: count }),
@@ -659,6 +707,10 @@ export class BrowserController {
             await cdp('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Backspace', code: 'Backspace', windowsVirtualKeyCode: 8 });
             await cdp('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Backspace', code: 'Backspace', windowsVirtualKeyCode: 8 });
           }
+        }
+        if (args.chooser) {
+          const caught = await this.waitChooser(tabId, this.chooserWaitMs, signal);
+          return { tabId, action, button, count, completed: true, chooserArmed: true, chooserMode: caught?.mode ?? null, chooserFrameId: caught?.frameId ?? null };
         }
         return { tabId, action, button, count, completed: true };
       } finally {
@@ -720,8 +772,31 @@ export class BrowserController {
     }
     if (action === 'upload') {
       const files = args.paths ?? (args.path ? [args.path] : []);
-      if (!files.length) throw new Error('UPLOAD_TARGET: give path or paths');
       if (args.path && args.paths) throw new Error('UPLOAD_TARGET: give path or paths, not both');
+      if (args.ref && args.chooser) throw new Error('UPLOAD_TARGET: give ref or chooser, not both');
+      if (args.chooser) {
+        if (args.cancel) {
+          const pending = this.attached.get(tabId)?.chooser ?? null;
+          await this.cancelChooser(tabId);
+          return { tabId, canceled: Boolean(pending), chooserMode: pending?.mode ?? null, frameId: pending?.frameId ?? null };
+        }
+        if (!files.length) throw new Error('UPLOAD_TARGET: give path or paths, or cancel=true');
+        const pending = await this.waitChooser(tabId, args.timeoutMs ?? 3000, signal);
+        if (!pending) throw new Error('FILE_CHOOSER_NOT_OPEN: no intercepted chooser is waiting; click the upload control with chrome_click chooser=true first');
+        if (!pending.backendNodeId) throw new Error('FILE_CHOOSER_INJECT_FAILED: the chooser reported no file input node');
+        try {
+          await cdp('DOM.setFileInputFiles', { files, backendNodeId: pending.backendNodeId });
+        } catch (error) {
+          // The chooser is unusable now; release it before reporting why.
+          await this.cancelChooser(tabId);
+          // A cross-origin frame can report a node this session cannot address.
+          throw new Error(`FILE_CHOOSER_INJECT_FAILED: ${clip(String(error?.message ?? error), 500)} (frame ${pending.frameId ?? 'unknown'})`);
+        }
+        await this.cancelChooser(tabId);
+        return { tabId, files: files.map(file => file.split(/[\\/]/).pop()), chooserMode: pending.mode, frameId: pending.frameId };
+      }
+      if (!files.length) throw new Error('UPLOAD_TARGET: give path or paths');
+      if (!args.ref) throw new Error('UPLOAD_TARGET: give ref for a page input, or chooser=true after chrome_click chooser=true');
       const backendNodeId = this.attached.get(tabId)?.refs.get(args.ref);
       if (!backendNodeId) throw new Error('STALE_ELEMENT: take a fresh snapshot');
       const objectId = await this.element(tabId, args.ref, signal);
