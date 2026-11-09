@@ -115,6 +115,9 @@ export class BrowserController {
   constructor(api, detached = () => {}) {
     this.api = api;
     this.detached = detached;
+    // Mirrors the popup's default: foreground raises the Chrome window so input
+    // always lands. The background silent mode never touches window focus.
+    this.foregroundMode = true;
     this.attached = new Map();
     // Native Chrome promises outlive our timeouts. Do not attach a new session
     // while a previous native cleanup can still detach it.
@@ -259,8 +262,42 @@ export class BrowserController {
     return { id: groupId, title };
   }
 
+  // Chrome delivers synthesized input only to the active tab of a visible
+  // window. Foreground mode raises the window; the background silent mode makes
+  // the tab current inside its own window and never asks Chrome to focus it, so
+  // the app the user is typing in stays in front.
+  async reveal(tabId, signal) {
+    if (this.foregroundMode) {
+      // Foreground mode: the behavior before 0.6.3. Page.bringToFront also
+      // activates the window, so it takes focus from the app the user is in.
+      await this.command(tabId, 'Page.bringToFront', {}, signal);
+      return;
+    }
+    const tab = await bounded(this.api.tabs.get(tabId), signal, 'tabs.get');
+    if (!tab.active) await bounded(this.api.tabs.update(tabId, { active: true }), signal, 'tabs.update');
+    // Activation reaches the renderer asynchronously, so read visibility until
+    // it settles. A hidden tab drops coordinate input without reporting an
+    // error, so failing loudly here is better than a click that never happens.
+    const deadline = Date.now() + 500;
+    while (true) {
+      signal.throwIfAborted();
+      let state;
+      try {
+        const probe = await this.command(tabId, 'Runtime.evaluate', { expression: 'document.visibilityState', returnByValue: true }, signal);
+        state = probe?.result?.value;
+      } catch (error) {
+        // The probe is optional: a page that cannot answer still gets the input
+        // command, which reports its own failure. Cancellation must not be hidden.
+        if (signal.aborted) throw error;
+      }
+      if (state !== 'hidden') return;
+      if (Date.now() >= deadline) throw new Error('PAGE_HIDDEN: this tab reports visibilityState=hidden (its Chrome window is minimized or covered), so synthesized input would be dropped. Call chrome_activate to bring the tab forward, then retry.');
+      await sleep(50, signal);
+    }
+  }
+
   async drag(tabId, args, cdp, signal) {
-    await cdp('Page.bringToFront');
+    await this.reveal(tabId, signal);
     const marker = crypto.randomUUID().slice(0, 12);
     const srcSelector = `[data-dsh-drag-src="${marker}"]`;
     const dstSelector = `[data-dsh-drag-dst="${marker}"]`;
@@ -543,7 +580,7 @@ export class BrowserController {
     }
     if (action === 'click' || action === 'fill') {
       // Hidden tabs can acknowledge mouse events without delivering them to the page.
-      await cdp('Page.bringToFront');
+      await this.reveal(tabId, signal);
       const objectId = await this.element(tabId, args.ref, signal);
       try {
         const location = await cdp('Runtime.callFunctionOn', {
@@ -630,7 +667,7 @@ export class BrowserController {
       }
     }
     if (action === 'key') {
-      await cdp('Page.bringToFront');
+      await this.reveal(tabId, signal);
       const { key, code, keyCode, text, modifiers } = keyDescriptor(args.key);
       const base = { key, code, windowsVirtualKeyCode: keyCode, nativeVirtualKeyCode: keyCode, modifiers };
       await cdp('Input.dispatchKeyEvent', { ...base, type: text === undefined ? 'rawKeyDown' : 'keyDown', ...(text === undefined ? {} : { text, unmodifiedText: text }) });
@@ -638,7 +675,7 @@ export class BrowserController {
       return { pressed: args.key, modifiers };
     }
     if (action === 'hover') {
-      await cdp('Page.bringToFront');
+      await this.reveal(tabId, signal);
       let point;
       if (args.ref) {
         const objectId = await this.element(tabId, args.ref, signal);
@@ -657,7 +694,7 @@ export class BrowserController {
       return { tabId, x: point.x, y: point.y, hovered: true };
     }
     if (action === 'select') {
-      await cdp('Page.bringToFront');
+      await this.reveal(tabId, signal);
       const objectId = await this.element(tabId, args.ref, signal);
       try {
         const selected = await cdp('Runtime.callFunctionOn', {
@@ -697,7 +734,7 @@ export class BrowserController {
       } finally {
         await this.command(tabId, 'Runtime.releaseObject', { objectId }, AbortSignal.timeout(1000)).catch(() => {});
       }
-      await cdp('Page.bringToFront');
+      await this.reveal(tabId, signal);
       await cdp('DOM.setFileInputFiles', { files, backendNodeId });
       return { tabId, files: files.map(file => file.split(/[\\/]/).pop()) };
     }
@@ -768,7 +805,7 @@ export class BrowserController {
     if (action === 'drag') return this.drag(tabId, args, cdp, signal);
     if (action === 'scroll_to') {
       if (Boolean(args.ref) === Boolean(args.selector)) throw new Error('SCROLL_TARGET: give exactly one of ref or selector');
-      await cdp('Page.bringToFront');
+      await this.reveal(tabId, signal);
       const block = args.block ?? 'center';
       const positionFn = `function(block) {
         if (!this.isConnected) throw new Error('STALE_ELEMENT');
@@ -795,7 +832,7 @@ export class BrowserController {
       return { tabId, ...result.result.value };
     }
     if (action === 'scroll') {
-      await cdp('Page.bringToFront');
+      await this.reveal(tabId, signal);
       await cdp('Input.dispatchMouseEvent', { type: 'mouseWheel', x: 100, y: 100, deltaX: 0, deltaY: args.deltaY });
       return { completed: true };
     }

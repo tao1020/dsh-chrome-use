@@ -19,6 +19,12 @@
       <p class="help">连接后，AI 自动选择网页，无需逐页授权。点击“断开连接”可以停止全部操作。</p>
       <h2>正在调试的标签页</h2><ul id="tabs"><li>当前没有调试中的标签页</li></ul>
     </section>
+    <section aria-label="运行模式">
+      <h2>运行模式</h2>
+      <label class="mode-row"><input type="checkbox" id="foreground" checked> <span>前台模式</span></label>
+      <p class="help" id="foreground-on">开：操作时会把浏览器窗口抬到最前，会抢走你正在用的应用的焦点。</p>
+      <p class="help" id="foreground-off">关：只在浏览器窗口内切换标签页，不抢焦点；窗口被最小化或完全遮挡时，操作会返回 PAGE_HIDDEN。改完立即生效，不用重新连接。</p>
+    </section>
     <button id="disconnect" class="secondary">断开连接</button>
     <p id="error" role="alert"></p>
   </main>

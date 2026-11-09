@@ -308,8 +308,9 @@ test('drag sends a full press-move-release sequence for mouse drags', async () =
   assert.equal(calls.find(([method, params]) => method === 'Input.dispatchMouseEvent' && params.type === 'mouseReleased')[1].x, 110);
 });
 
-test('input activates background tabs; activation failure never dispatches input', async () => {
+test('background mode makes the tab current without focusing its window and never dispatches after a failed activation', async () => {
   const { controller, calls, api } = fixture();
+  controller.foregroundMode = false;
   await controller.execute('claim', { tabId: 7 });
   const snapshot = await controller.execute('snapshot', { tabId: 7 });
   for (const [action, args] of [
@@ -320,13 +321,37 @@ test('input activates background tabs; activation failure never dispatches input
   ]) {
     calls.length = 0;
     await controller.execute(action, { tabId: 7, ...args });
-    assert.equal(calls[0][0], 'Page.bringToFront');
+    assert.deepEqual(calls.find(([method]) => method === 'tabs.update'), ['tabs.update', { id: 7, active: true }]);
+    assert.ok(calls.some(([method, params]) => method === 'Runtime.evaluate' && params.expression === 'document.visibilityState'));
     assert.ok(calls.some(([method]) => method.startsWith('Input.')));
+    assert.ok(!calls.some(([method]) => method === 'Page.bringToFront' || method === 'windows.update'));
   }
   calls.length = 0;
-  api.debugger.sendCommand = async () => { throw new Error('Target closed'); };
-  await assert.rejects(controller.execute('scroll', { tabId: 7, deltaY: 100 }), /Target closed/);
-  assert.equal(calls.length, 0);
+  api.tabs.update = async () => { throw new Error('TAB_CLOSED'); };
+  await assert.rejects(controller.execute('scroll', { tabId: 7, deltaY: 100 }), /TAB_CLOSED/);
+  assert.ok(!calls.some(([method]) => method.startsWith('Input.')));
+});
+test('foreground mode raises the window instead of switching tabs in place', async () => {
+  const { controller, calls } = fixture();
+  await controller.execute('claim', { tabId: 7 });
+  const snapshot = await controller.execute('snapshot', { tabId: 7 });
+  calls.length = 0;
+  await controller.execute('click', { tabId: 7, ref: snapshot.elements[0].ref });
+  assert.equal(calls[0][0], 'Page.bringToFront');
+  assert.ok(!calls.some(([method]) => method === 'tabs.update'));
+  assert.ok(calls.some(([method]) => method === 'Input.dispatchMouseEvent'));
+});
+test('a hidden tab fails with PAGE_HIDDEN instead of clicking into nothing', async () => {
+  const { controller, calls } = fixture({
+    'Runtime.evaluate': params => params.expression === 'document.visibilityState' ? { result: { value: 'hidden' } } : { result: { value: true } },
+  });
+  controller.foregroundMode = false;
+  await controller.execute('claim', { tabId: 7 });
+  const snapshot = await controller.execute('snapshot', { tabId: 7 });
+  calls.length = 0;
+  await assert.rejects(controller.execute('click', { tabId: 7, ref: snapshot.elements[0].ref }), /PAGE_HIDDEN/);
+  assert.ok(!calls.some(([method]) => method.startsWith('Input.')));
+  assert.ok(!calls.some(([method]) => method === 'Page.bringToFront' || method === 'windows.update'));
 });
 test('disabled/obscured element failure never sends a click', async () => {
   const { controller, api, calls } = fixture();
@@ -429,7 +454,7 @@ test('scroll_to accepts a selector without needing a snapshot ref', async () => 
   await controller.execute('claim', { tabId: 7 });
   const result = await controller.execute('scroll_to', { tabId: 7, selector: '#target', block: 'start' });
   assert.equal(result.y, 400);
-  const expression = calls.find(([method]) => method === 'Runtime.evaluate')[1].expression;
+  const expression = calls.find(([method, params]) => method === 'Runtime.evaluate' && params.expression.includes('scrollIntoView'))[1].expression;
   assert.match(expression, /"start"|'start'/);
   assert.match(expression, /#target/);
 });

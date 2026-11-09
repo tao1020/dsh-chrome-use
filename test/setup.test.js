@@ -18,3 +18,11 @@ test('popup puts the one-sentence usage and the repository link above the status
   assert.match(html.slice(intro, html.indexOf('id="status"')), /使用方法：在 Harness 里说/);
   assert.match(html.slice(intro, html.indexOf('id="status"')), /https:\/\/github\.com\/tao1020\/dsh-chrome-use/);
 });
+
+test('popup offers the foreground-mode switch with one line per mode', async () => {
+  const html = await readFile(new URL('../extension/popup.html', import.meta.url), 'utf8');
+  assert.match(html, /id="foreground"/);
+  assert.match(html, /前台模式/);
+  assert.match(html, /抢走你正在用的应用的焦点/);
+  assert.match(html, /不抢焦点/);
+});

@@ -25,6 +25,8 @@ ul { margin: 0 0 18px; padding: 0; list-style: none; }
 li { padding: 5px 0; overflow-wrap: anywhere; }
 .secondary { color: #33445e; background: white; border-color: #b8c5d6; padding: 8px 10px; font-size: 12px; }
 .secondary:hover:not(:disabled) { background: #edf3fc; }
+.mode-row { display: flex; align-items: center; gap: 7px; margin: 6px 0 8px; font-size: 13px; font-weight: 600; }
+.mode-row input { width: auto; margin: 0; padding: 0; letter-spacing: 0; }
 #error { color: #a22331; font-size: 12px; overflow-wrap: anywhere; }
 footer { padding: 12px 22px 18px; color: #657083; font-size: 11px; }
 a { color: #185adb; }
