@@ -15,6 +15,7 @@
     "docs",
     "cordis.patch.yml",
     "README.md",
+    "CHANGELOG.md",
     "PRIVACY.md",
     "THIRD_PARTY_NOTICES.md",
     "scripts/build-client.mjs"
