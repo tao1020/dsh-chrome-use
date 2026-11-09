@@ -78,7 +78,7 @@ chrome_upload({ tabId, chooser: true, paths: ["/Users/tao/Downloads/a.diag"] })
 
 ## 更新
 
-Chrome 扩展由 Chrome 应用商店自动更新，也可以在 `chrome://extensions` 点击扩展卡片的“更新”手动检查。Harness 插件在插件管理里更新。
+Chrome 扩展由 Chrome 应用商店自动更新，也可以在 `chrome://extensions` 点击扩展卡片的“更新”手动检查。Harness 插件在插件管理里更新。每个版本的改动见 [更新日志](CHANGELOG.md)。
 
 两边分别更新，版本不必完全一致；设置页的“检查更新”只查询 GitHub 最新正式版本，不会自动下载。已连接的扩展版本显示在设置页的“连接状态”。
 
