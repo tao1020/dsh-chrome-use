@@ -50,7 +50,7 @@ dsh plugin --profile desktop add dsh-chrome-use
 
 ## 能做什么
 
-连接后，AI 可以选择所有普通 HTTP(S) 标签页，无需逐页点击授权。支持读取页面结构，或把正文读成纯文本/近似 Markdown；按名称和角色查找元素；点击（含双击和右键）、填写输入框和 contenteditable 区域、按键和组合键、悬停、拖拽、下拉选择、单文件或多文件上传、等待页面状态、网络空闲或自定义条件、页面导出 PDF、处理 alert/confirm/prompt、滚动和滚动到元素、刷新/后退/前进、激活标签页、视口/整页/元素截图（可选把图片直接返回给模型）、导航，查看带游标的控制台日志、JavaScript 错误和网络请求，按需读取某条响应体，以及查看 Chrome 下载记录。
+连接后，AI 可以选择所有普通 HTTP(S) 标签页，无需逐页点击授权。支持读取页面结构，或把正文读成纯文本/近似 Markdown；按名称和角色查找元素；点击（含双击和右键）、填写输入框和 contenteditable 区域、按键和组合键、悬停、拖拽、下拉选择、单文件或多文件上传（包括页面动态创建、没挂到 DOM 上的文件输入框）、等待页面状态、网络空闲或自定义条件、页面导出 PDF、处理 alert/confirm/prompt、滚动和滚动到元素、刷新/后退/前进、激活标签页、视口/整页/元素截图（可选把图片直接返回给模型）、导航，查看带游标的控制台日志、JavaScript 错误和网络请求，按需读取某条响应体，以及查看 Chrome 下载记录。
 
 插件安装后会自动注册同名技能 `dsh-chrome-use`。AI 需要操作 Chrome 时会按需加载它，按里面的连接、操作和收尾流程执行；也可以在对话里输入 `/dsh-chrome-use` 主动加载。不需要另外安装 skill 文件，也不需要手动改系统提示词。
 
@@ -64,6 +64,17 @@ dsh plugin --profile desktop add dsh-chrome-use
 不同标签页的读取、等待等操作可以并行。点击、输入、拖拽等会切换当前标签页的操作共用一把锁，自动排队，避免两条命令在同一个窗口里互相切页；排队时间计入命令超时。关掉「前台模式」后，这些操作不改变窗口焦点；`chrome_activate` 在任何模式下都会把浏览器窗口抬到最前。同一标签页同时只执行一条命令，重叠调用返回 `TAB_BUSY`。`chrome_close` 真正关闭页面；`chrome_release` 只解除占用，保留页面。
 
 `chrome_open` 必须带一个组名（`group`，1-40 个字符），新建的标签页会立刻放进同名 Chrome 标签页组：同一系列任务的多个标签页复用同一个组名，扩展会在同一窗口里找同名组并加入，找不到就建组；组的颜色由组名稳定生成，所以同一系列总是同色。分组失败（例如固定标签页）不会影响打开动作，结果里会带 `groupError`。
+
+## 页面动态创建的上传框
+
+有些页面不把 `<input type="file">` 放进 DOM，而是临时创建后直接 `click()` 打开系统选择框。这种元素拿不到 ref，用下面两步：
+
+```js
+chrome_click({ tabId, ref: "上传按钮的 ref", chooser: true })
+chrome_upload({ tabId, chooser: true, paths: ["/Users/tao/Downloads/a.diag"] })
+```
+
+第一步会在点击前拦截文件选择框，结果里带 `chooserMode`；第二步把文件注入被拦截的选择框，页面照常收到 `change` 事件。两步要在 30 秒内完成，没人消费会自动取消；只想关掉选择框用 `cancel: true`。页面自己的 `change` 处理报错时，用 `chrome_logs` 看 JavaScript 异常。
 
 ## 更新
 

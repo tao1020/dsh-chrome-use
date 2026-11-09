@@ -120,11 +120,16 @@ export async function apply(ctx) {
         if (definition.name === 'chrome_upload') {
           if (args.path && args.paths) throw new Error('UPLOAD_TARGET: give path or paths, not both');
           const files = args.paths ?? (args.path ? [args.path] : []);
-          if (!files.length) throw new Error('UPLOAD_TARGET: give path or paths');
-          args.paths = await validateUploadPaths(files);
-          delete args.path;
+          if (files.length) {
+            args.paths = await validateUploadPaths(files);
+            delete args.path;
+          } else if (!args.cancel) throw new Error('UPLOAD_TARGET: give path or paths, or cancel=true');
         }
         const result = await bridge.call(definition.name.slice(7), args, exec.agent?.id, exec.signal);
+        if (definition.name === 'chrome_upload' && args.paths?.length) {
+          // Sizes come from the host because the extension cannot read the files.
+          result.bytes = await Promise.all(args.paths.map(async path => (await stat(path)).size));
+        }
         if (definition.name === 'chrome_pdf') {
           const data = result.data;
           if (typeof data !== 'string' || !/^[A-Za-z0-9+/]*={0,2}$/.test(data)) throw new Error('INVALID_PDF');
