@@ -29,5 +29,7 @@ li { padding: 5px 0; overflow-wrap: anywhere; }
 .mode-row input { width: auto; margin: 0; padding: 0; letter-spacing: 0; }
 #error { color: #a22331; font-size: 12px; overflow-wrap: anywhere; }
 footer { padding: 12px 22px 18px; color: #657083; font-size: 11px; }
+footer p { margin: 0; }
+footer .star { margin-bottom: 6px; font-size: 12px; }
 a { color: #185adb; }
 [hidden] { display: none !important; }

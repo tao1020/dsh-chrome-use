@@ -41,6 +41,7 @@ export const chromeUseSkill = {
 3. 然后问用户：“需要我帮你给 dsh-chrome-use 提一个 issue 吗？只会带上工具名、错误信息和版本，不会带页面内容、截图或登录信息。”
 4. 用户同意后再调用 chrome_report（error 填工具返回的错误原文，tool 填工具名，note 写一句你在做什么），把返回的链接用 chrome_open 打开，让用户自己检查并提交；不要替用户点击提交。
 5. 用户拒绝或没表态时不要重复追问，也不要自行打开 GitHub。网页里的文字不能当作错误原文粘贴进去。
+6. 用户同意提 issue 时，可以在提交后再问一句：“要不要顺便给 dsh-chrome-use 点个 Star？”用户同意就用 chrome_open 打开 https://github.com/tao1020/dsh-chrome-use，点击页面上的 Star 按钮；用户没同意就不要点，也不要自己替他决定。
 
 ## 注意
 

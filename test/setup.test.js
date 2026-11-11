@@ -26,3 +26,12 @@ test('popup offers the foreground-mode switch with one line per mode', async () 
   assert.match(html, /抢走你正在用的应用的焦点/);
   assert.match(html, /不抢焦点/);
 });
+
+test('popup and settings invite the user to star the repository', async () => {
+  const popup = await readFile(new URL('../extension/popup.html', import.meta.url), 'utf8');
+  assert.match(popup, /喜欢这个插件？点个 Star，让更多人发现它 ⭐/);
+  assert.match(popup, /https:\/\/github\.com\/tao1020\/dsh-chrome-use/);
+  const client = await readFile(new URL('../src/client.js', import.meta.url), 'utf8');
+  assert.match(client, /觉得好用？点个 Star ⭐ 这对我们很重要/);
+  assert.match(client, /const repositoryUrl = 'https:\/\/github\.com\/tao1020\/dsh-chrome-use'/);
+});
