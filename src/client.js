@@ -58,7 +58,7 @@ async function checkRelease(current, fetcher = fetch) {
   } finally { clearTimeout(timer); }
 }
 
-const packageVersion = "0.6.6";
+const packageVersion = "0.6.7";
 // Wrapped by scripts/build-client.mjs for the Harness browser module loader.
 const React = require('react');
 const { createElement: h, useState, useEffect, useRef } = React;
@@ -170,6 +170,7 @@ function StatusPage({ read, pair }) {
   return h('section', { style: { padding: 24 }, 'aria-label': 'dsh-chrome-use' },
     h('h2', null, 'dsh-chrome-use'),
     h('p', null, `Harness 插件版本：${packageVersion}`),
+    h('p', null, link(repositoryUrl, '觉得好用？点个 Star ⭐ 这对我们很重要')),
     settingsSectionOrder(connected).map(key => blocks[key]));
 }
 module.exports.inject = ['slots', 'remote'];
