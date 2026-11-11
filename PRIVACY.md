@@ -22,4 +22,4 @@ dsh-chrome-use 用于让你配置的 DeepSeek Harness 操作本机 Chrome。扩�
 
 在扩展弹窗点击“断开连接”会停止当前调试并关闭自动重连，保留配对信息以便以后重连。卸载 Chrome 扩展会移除扩展自身的存储；卸载 Harness 插件后，可自行删除上述本地目录。Harness 会话历史需要在 Harness 中另行管理。
 
-项目问题可在 https://github.com/tao1020/dsh-chrome-use/issues 提交。不要在公开 issue 中上传密钥、配对码、私人页面截图或未清理的会话日志。
+使用 `chrome_report` 生成反馈时，只包含工具名、错误信息和版本号，不包含页面内容、截图或登录信息；是否提交由你决定。项目问题可在 https://github.com/tao1020/dsh-chrome-use/issues 提交。不要在公开 issue 中上传密钥、配对码、私人页面截图或未清理的会话日志。
