@@ -7,6 +7,11 @@ import { Bridge } from './bridge.js';
 import { storeUrl } from './links.js';
 import { registerChromeUseSkill } from './skill.js';
 import { TOOLS, validateArgs } from '../extension/protocol.js';
+import { buildIssueReport } from './report.js';
+import { createRequire } from 'node:module';
+
+// The issue report quotes the version the user is actually running.
+const pluginVersion = createRequire(import.meta.url)('../package.json').version;
 
 export const name = 'dsh-chrome-use';
 export const inject = ['tools'];
@@ -124,6 +129,12 @@ export async function apply(ctx) {
             args.paths = await validateUploadPaths(files);
             delete args.path;
           } else if (!args.cancel) throw new Error('UPLOAD_TARGET: give path or paths, or cancel=true');
+        }
+        if (definition.name === 'chrome_report') {
+          // Built on the host: it needs no browser session, so it also works
+          // when the failure is a connection problem.
+          const status = bridge.status();
+          return buildIssueReport({ ...args, pluginVersion, extensionVersion: status.extensionVersion, connected: status.connected });
         }
         const result = await bridge.call(definition.name.slice(7), args, exec.agent?.id, exec.signal);
         if (definition.name === 'chrome_upload' && args.paths?.length) {

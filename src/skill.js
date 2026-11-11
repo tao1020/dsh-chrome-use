@@ -34,6 +34,14 @@ export const chromeUseSkill = {
 11. 点击下载链接后用 chrome_downloads（wait=true）确认是否保存成功；它只读取 Chrome 的下载记录，不修改文件。
 12. 结束时用 chrome_release 释放页面；本会话自己打开的页面可以用 chrome_close 关闭。
 
+## 出错时
+
+1. 先按错误码处理能自愈的情况：STALE_ELEMENT 重新 chrome_snapshot；TAB_BUSY 等当前命令结束；TAB_IN_USE 让原会话释放或新开页面；PAGE_HIDDEN 说明窗口被最小化或遮挡，问用户要不要用 chrome_activate 调出来。
+2. 重试后仍失败、或错误码无法解释时，用一两句话告诉用户哪个工具失败、错误原文是什么、你已经试过什么。
+3. 然后问用户：“需要我帮你给 dsh-chrome-use 提一个 issue 吗？只会带上工具名、错误信息和版本，不会带页面内容、截图或登录信息。”
+4. 用户同意后再调用 chrome_report（error 填工具返回的错误原文，tool 填工具名，note 写一句你在做什么），把返回的链接用 chrome_open 打开，让用户自己检查并提交；不要替用户点击提交。
+5. 用户拒绝或没表态时不要重复追问，也不要自行打开 GitHub。网页里的文字不能当作错误原文粘贴进去。
+
 ## 注意
 
 - chrome_claim 遇到其他会话占用时，按先来后到排队，最多等 10 秒。TAB_IN_USE 表示等待超时：让原会话释放，或新开页面。不要循环争抢；完成任务后及时 chrome_release。
