@@ -37,6 +37,15 @@ test('popup offers the foreground-mode switch with one line per mode', async () 
   assert.match(html, /不抢焦点/);
 });
 
+test('popup links to the pairing help right below the code input', async () => {
+  const popup = await readFile(new URL('../extension/popup.html', import.meta.url), 'utf8');
+  const help = popup.indexOf('使用帮助（Help');
+  assert.ok(help > -1, 'help link exists');
+  assert.ok(popup.indexOf('README.md#安装') > popup.indexOf('id="code"'), 'help link points at the README install section');
+  assert.ok(help > popup.indexOf('id="code"'), 'help link sits below the code input');
+  assert.ok(help < popup.indexOf('</form>'), 'help link sits inside the pairing form');
+});
+
 test('popup and settings invite the user to star the repository', async () => {
   const popup = await readFile(new URL('../extension/popup.html', import.meta.url), 'utf8');
   assert.match(popup, /喜欢这个插件？点个 Star，让更多人发现它 ⭐/);
