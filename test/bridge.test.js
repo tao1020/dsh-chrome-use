@@ -72,6 +72,7 @@ test('pair returns both the legacy numeric alias and an encoded port code', asyn
   assert.equal(decoded.port, bridge.port);
   assert.ok(Number.isSafeInteger(decoded.nonce));
   assert.equal(pairing.port, bridge.port);
+  assert.equal(pairing.expiresInSeconds, 600);
 });
 
 test('encoded and legacy codes authenticate, and one success consumes both', async t => {

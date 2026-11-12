@@ -19,6 +19,14 @@ test('popup asks only for the pairing code, with no port or usage text', async (
   assert.doesNotMatch(html, /class="intro"/);
 });
 
+test('popup shows connection errors right below the pairing-code row', async () => {
+  const html = await readFile(new URL('../extension/popup.html', import.meta.url), 'utf8');
+  const row = html.indexOf('class="pair-row"');
+  const error = html.indexOf('id="error"');
+  const tabs = html.indexOf('id="tabs"');
+  assert.ok(row > -1 && error > row && error < tabs, 'error box should follow the code input, above the tab list');
+});
+
 test('popup offers the foreground-mode switch with one line per mode', async () => {
   const html = await readFile(new URL('../extension/popup.html', import.meta.url), 'utf8');
   assert.match(html, /id="foreground"/);

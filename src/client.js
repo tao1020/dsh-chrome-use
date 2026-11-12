@@ -17,7 +17,7 @@ function parsePairing(value) {
     if (typeof value.pairingCode !== 'string' || !PAIRING_CODE_RE.test(value.pairingCode) || !/[A-Z]/.test(value.pairingCode)) throw new Error('Invalid pairing code');
   }
   if (!Number.isSafeInteger(value.port) || value.port < 1 || value.port > 65535) throw new Error('Invalid pairing port');
-  if (!Number.isSafeInteger(value.expiresInSeconds) || value.expiresInSeconds < 1 || value.expiresInSeconds > 600) throw new Error('Invalid pairing lifetime');
+  if (!Number.isSafeInteger(value.expiresInSeconds) || value.expiresInSeconds < 1 || value.expiresInSeconds > 3600) throw new Error('Invalid pairing lifetime');
   if (typeof value.instructions !== 'string' || value.instructions.length > 2000) throw new Error('Invalid pairing instructions');
   return { code: value.code, ...(value.pairingCode === undefined ? {} : { pairingCode: value.pairingCode }), port: value.port, expiresInSeconds: value.expiresInSeconds, instructions: value.instructions };
 }
@@ -68,7 +68,7 @@ async function checkRelease(current, fetcher = fetch) {
   } finally { clearTimeout(timer); }
 }
 
-const packageVersion = "0.7.0";
+const packageVersion = "0.7.1";
 // Wrapped by scripts/build-client.mjs for the Harness browser module loader.
 const React = require('react');
 const { createElement: h, useState, useEffect, useRef } = React;
@@ -157,7 +157,7 @@ function StatusPage({ read, pair }) {
     h('button', { onClick: refresh, disabled: state.loading, style: buttonStyle }, state.loading ? '刷新中…' : '刷新状态'));
   const pairBlock = h('div', { key: 'pair' },
     h('h3', null, '配对 Chrome 扩展'),
-    h('p', null, '点击下面的按钮生成 8 位配对码，然后在 Chrome 工具栏打开 dsh-chrome-use 扩展，粘贴配对码并点击“连接”。新配对码已经包含端口，扩展会自动识别，不需要手填端口。配对码 2 分钟内有效，生成新码会让旧码立即失效。'),
+    h('p', null, '点击下面的按钮生成 8 位配对码，然后在 Chrome 工具栏打开 dsh-chrome-use 扩展，粘贴配对码并点击“连接”。新配对码已经包含端口，扩展会自动识别，不需要手填端口。配对码 10 分钟内有效，生成新码会让旧码立即失效。'),
     h('button', { onClick: requestPairing, disabled: pairing.loading, style: buttonStyle }, pairing.loading ? '正在生成…' : pairing.code || expired ? '重新生成配对码' : '生成配对码'),
     pairing.error && h('p', { role: 'alert', style: { color: 'var(--dsh-danger, #d9534f)' } }, pairing.error),
     pairing.code && !expired && h('div', { style: { marginTop: 12 } },

@@ -16,7 +16,7 @@ export const chromeUseSkill = {
 ## 连接
 
 1. 先调用 chrome_status 检查连接。
-2. 未连接时调用 chrome_pair 生成 8 位配对码（2 分钟内有效）。返回里有 pairingCode 时优先把 pairingCode 给用户；它已经包含端口，新扩展会自动识别，不要要求用户再填端口。没有 pairingCode 时使用纯数字 code（旧桥/旧扩展，只在 18791 可用）。让用户在 Chrome 工具栏打开 dsh-chrome-use 扩展，粘贴配对码并点击“连接”。扩展还没安装时，让用户到 Harness 设置 → dsh-chrome-use 点商店链接安装。不要要求用户重装或手动加载文件夹。
+2. 未连接时调用 chrome_pair 生成 8 位配对码（10 分钟内有效）。返回里有 pairingCode 时优先把 pairingCode 给用户；它已经包含端口，新扩展会自动识别，不要要求用户再填端口。没有 pairingCode 时使用纯数字 code（旧桥/旧扩展，只在 18791 可用）。让用户在 Chrome 工具栏打开 dsh-chrome-use 扩展，粘贴配对码并点击“连接”。扩展还没安装时，让用户到 Harness 设置 → dsh-chrome-use 点商店链接安装。不要要求用户重装或手动加载文件夹。
 3. 配对成功后，重启 Harness、Chrome 或扩展自动更新都会自动重连。用户主动断开后，留空配对码点“连接”即可。
 
 ## 操作流程
