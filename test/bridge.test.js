@@ -467,3 +467,54 @@ test('two bridges with separate state dirs keep independent pairing identities',
   const wrongOnFirst = await socket(first, { type: 'auth', token: secondToken });
   assert.match(wrongOnFirst.response.error, /AUTH_FAILED/);
 });
+
+test('an inbox push shows the unread hint in status and on the next tool result', async t => {
+  const bridge = await fixture(t);
+  const { ws } = await pair(bridge);
+  respond(ws, request => request.action === 'messages'
+    ? { messages: [{ id: 3, at: Date.now(), from: '18791', to: 'all', text: 'hi' }], cursor: 3, unread: 0 }
+    : { tabs: [] });
+  ws.send(JSON.stringify({ type: 'inbox', unread: 2, senders: ['18791', '18793'] }));
+  await until(() => bridge.status().messages?.unread === 2);
+  assert.deepEqual(bridge.status().messages, { unread: 2, senders: ['18791', '18793'] });
+
+  const tabs = await bridge.call('tabs', {}, 'owner-a');
+  assert.deepEqual(tabs.tabs, []);
+  assert.deepEqual(tabs.messages, { unread: 2, senders: ['18791', '18793'] });
+
+  const read = await bridge.call('messages', {}, 'owner-a');
+  assert.deepEqual(read.messages.map(message => message.id), [3]);
+  assert.equal(bridge.status().messages, undefined);
+  const after = await bridge.call('tabs', {}, 'owner-a');
+  assert.equal(after.messages, undefined);
+});
+
+test('a read that still leaves unread messages keeps a smaller hint', async t => {
+  const bridge = await fixture(t);
+  const { ws } = await pair(bridge);
+  respond(ws, () => ({ messages: [], cursor: 5, unread: 1 }));
+  ws.send(JSON.stringify({ type: 'inbox', unread: 3, senders: ['18791'] }));
+  await until(() => bridge.status().messages?.unread === 3);
+  const read = await bridge.call('messages', {}, 'owner-a');
+  assert.equal(read.unread, 1);
+  assert.deepEqual(bridge.status().messages, { unread: 1, senders: ['18791'] });
+});
+
+test('malformed inbox pushes are ignored and the hint clears when the extension disconnects', async t => {
+  const bridge = await fixture(t);
+  const { ws } = await pair(bridge);
+  ws.send(JSON.stringify({ type: 'inbox', unread: 0, senders: ['18791'] }));
+  ws.send(JSON.stringify({ type: 'inbox', unread: 2, senders: ['not-a-port'] }));
+  ws.send(JSON.stringify({ type: 'inbox', unread: 51, senders: ['18791'] }));
+  await new Promise(resolve => setTimeout(resolve, 50));
+  assert.equal(bridge.status().connected, true);
+  assert.equal(bridge.status().messages, undefined);
+
+  ws.send(JSON.stringify({ type: 'inbox', unread: 1, senders: ['18791'] }));
+  await until(() => bridge.status().messages?.unread === 1);
+  const closed = once(ws, 'close');
+  ws.close();
+  await closed;
+  await until(() => bridge.status().messages === undefined);
+  assert.equal(bridge.status().connected, false);
+});

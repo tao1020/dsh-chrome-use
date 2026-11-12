@@ -3,13 +3,17 @@ import { randomBytes, randomInt, randomUUID, timingSafeEqual } from 'node:crypto
 import { mkdir, readFile, writeFile, rename } from 'node:fs/promises';
 import { join } from 'node:path';
 import { WebSocketServer, WebSocket } from 'ws';
-import { PORT, MAX_MESSAGE, DEADLINE_MS, PARALLEL_TABS } from '../extension/protocol.js';
+import { PORT, MAX_MESSAGE, DEADLINE_MS, PARALLEL_TABS, MESSAGE_UNREAD_MAX } from '../extension/protocol.js';
 import { classifyPairingCode, generatePairingCode, normalizePairingCode } from '../extension/pairing-code.js';
 import { candidatePorts, portStateDir, preferencePath, probePort, readPreferredPort, writePreferredPort } from './port-selector.js';
 
 const equal = (a, b) => typeof a === 'string' && typeof b === 'string' && a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b));
 const extensionOrigin = /^chrome-extension:\/\/[a-p]{32}$/;
 const CLAIM_WAIT_MS = 10000;
+const portValue = value => {
+  const port = typeof value === 'string' ? Number(value) : value;
+  return Number.isSafeInteger(port) && port >= 1024 && port <= 65535 ? String(port) : undefined;
+};
 
 export class Bridge {
   constructor({ port = PORT, auto = false, portCandidates, baseStateDir, stateDir, probe = probePort, deadlineMs = DEADLINE_MS, claimWaitMs = CLAIM_WAIT_MS } = {}) {
@@ -34,6 +38,9 @@ export class Bridge {
     this.lastDetach = new Map();
     this.closed = false;
     this.authFailures = [];
+    // Cross-Harness inbox hint. Only a count and sender ports live here; the
+    // message text waits in extension storage until chrome_messages reads it.
+    this.inbox = undefined;
   }
 
   async start() {
@@ -144,6 +151,7 @@ export class Bridge {
       ...(this.requestedPort !== undefined && this.requestedPort !== this.port ? { requestedPort: this.requestedPort } : {}),
       extensionVersion: this.peer?.extensionVersion ?? null,
       claimedTabs: [...this.claims.keys()],
+      ...(this.inbox?.unread ? { messages: { unread: this.inbox.unread, senders: [...this.inbox.senders] } } : {}),
       ...(this.lastError ? { lastError: this.lastError } : {}),
     };
   }
@@ -172,6 +180,7 @@ export class Bridge {
       clearTimeout(timer);
       if (this.peer === client) {
         this.peer = undefined;
+        this.inbox = undefined;
         this.claims.clear();
         this.busyTabs.clear();
         this.closingTabs.clear();
@@ -235,6 +244,15 @@ export class Bridge {
           this.lastError = undefined;
           clearTimeout(timer);
           client.send(JSON.stringify({ type: 'ready', token: identity.token, protocol: 1 }));
+          return;
+        }
+        if (message.type === 'inbox') {
+          const senders = Array.isArray(message.senders) && message.senders.length <= 3 ? message.senders.map(portValue) : [];
+          if (Number.isSafeInteger(message.unread) && message.unread >= 1 && message.unread <= MESSAGE_UNREAD_MAX && senders.length && senders.every(port => port !== undefined)) {
+            this.inbox = { unread: message.unread, senders, at: Date.now() };
+          }
+          // A malformed hint is ignored: it is not worth dropping a working
+          // connection over, and the next chrome_messages call re-syncs state.
           return;
         }
         if (message.type === 'detached' && Number.isSafeInteger(message.tabId)) {
@@ -425,6 +443,15 @@ export class Bridge {
         acquired = true;
       }
       if (action === 'release') this.releaseClaim(args.tabId, owner);
+      if (action === 'messages') {
+        // Reading consumes the hint; the result already carries the text.
+        const unread = Number.isSafeInteger(result?.unread) && result.unread > 0 ? result.unread : 0;
+        this.inbox = unread && unread <= MESSAGE_UNREAD_MAX ? { unread, senders: this.inbox?.senders ?? [], at: Date.now() } : undefined;
+        return result;
+      }
+      // The hint rides along with the next tool result so a busy chat still
+      // learns the inbox changed without polling chrome_status.
+      if (this.inbox?.unread) return { ...result, messages: { unread: this.inbox.unread, senders: [...this.inbox.senders] } };
       return result;
     } catch (error) {
       // The extension lost its debugger session; free the claim so the next chat can attach.
@@ -449,6 +476,7 @@ export class Bridge {
 
   async stop() {
     this.closed = true;
+    this.inbox = undefined;
     clearInterval(this.heartbeat);
     this.rejectAllWaiters(new Error('BRIDGE_STOPPED: the bridge is shutting down; nothing was changed'));
     this.claimWaiters.clear();
