@@ -43,6 +43,7 @@ li { padding: 5px 0; overflow-wrap: anywhere; }
 .mode-row input { width: auto; margin: 0; padding: 0; letter-spacing: 0; }
 #error { color: #a22331; font-size: 12px; overflow-wrap: anywhere; margin: 8px 0 0; }
 #error:empty { display: none; }
+.pair-help { margin: 8px 0 0; }
 footer { padding: 12px 22px 18px; color: #657083; font-size: 11px; }
 footer p { margin: 0; }
 a { color: #185adb; }
