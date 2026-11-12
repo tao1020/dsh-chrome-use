@@ -140,6 +140,8 @@ node scripts/fixture.mjs
 - `TAB_IN_USE`：等待 10 秒后，其他 Harness 会话仍占用该页。让原会话释放，或新建自己的标签页。
 - `TAB_BUSY`：这个标签页还有一条命令在运行。等它结束再操作同一页，或改用其他标签页；不同标签页可以直接并行。
 - `TAB_OWNED_BY_ANOTHER_HARNESS`：另一个 Harness 已占用这个标签页。让它在自己的会话里调用 `chrome_release`，或者换一个标签页。这个错误不会跨 Harness 排队。
+- `TAB_NOT_OWNED`：这个标签页不在当前 Harness 的占用表里——从没 `chrome_claim`，或者已经 `chrome_release`。先 claim 再操作。消息可能带诊断后缀 `(Chrome detached this tab <n>s ago: <reason>)`，说明 Chrome 之前主动解除了调试，例如 `target_closed`、`replaced_with_devtools`。
+- `TAB_NOT_LEASED`：Harness 以为还占着这个标签页，但扩展侧的租约已经丢失（常见于重载扩展后旧连接残留）。先用 `chrome_tabs` 确认页面还在，再重新 `chrome_claim`。它和 `TAB_NOT_OWNED` 都表示“还没有占用、需要先 claim”，只是检查层级不同。
 - `TAB_LEASE_QUARANTINED`：Chrome 没能完成上一次调试清理。重载扩展后再试；在重载前不要继续操作这个标签页。
 - `TAB_LEASE_CLOSING`：这个标签页正在被另一个 Harness 断开或清理。等清理完成后再试；不要循环重试。
 - Chrome 调试器冲突：关闭该页的 DevTools 或释放其他浏览器工具的会话，再检查连接。不要同时用 Codex 和 Harness 操作同一页。
@@ -157,6 +159,7 @@ node scripts/fixture.mjs
 - **会话占用不会自动到期**：会话遗留的占用不会自动到期，以免打断仍在工作的会话。应让原会话释放。
 - **顶层页面元素**：点击、输入和拖拽目前仅支持顶层页面元素，不支持跨域 iframe。
 - **文件上传**：文件上传只接受 home 或临时目录下、由用户明确指定的普通文件。HTML5 拖拽是页面内合成事件，个别站点可能不认，拖完要确认结果。
+- **HTML5 拖拽源**：拖拽源不一定是按钮；有些 `div[draggable]` 在 `snapshot` 里显示为 `role=group`、名称为空，但仍有可用的 `ref`。从快照上下文（周围文字、位置）确认哪一块是拖拽源，把它的 `ref` 传给 `chrome_drag` 的 `fromRef`。不要按名称 `find`，也不要把任意 `group` 当成拖拽源。
 - **snapshot 正文提取**：`snapshot` 的 `text`/`markdown` 模式是正文提取的近似结果。Markdown 不保证还原表格、嵌套列表和复杂布局，也不做正文区域识别或去广告。
 - **find 结果过多**：`find` 不加 500 条上限，但结果太多时应缩小名称或角色。
 - **网络请求记录**：网络请求只保留最近 200 条元数据，响应体需要按 `requestId` 单独读取，Chrome 可能已将其释放。

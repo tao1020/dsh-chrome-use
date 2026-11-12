@@ -9,6 +9,8 @@
 7. 先记录一份快照的 ref，再调用 chrome_navigate 到 /second。旧 ref 应报失效，不能误点其他元素。返回首页并重新读取快照，确认正常使用。工具可能用复合名称，但不要猜测 ref，必须使用实际快照里的值。
 8. 用 chrome_release 释放自己的测试页，再直接用 chrome_claim 接管同一页，确认无需用户点击任何逐页授权按钮。重新读取快照后，再 release。
 9. 调用 chrome_downloads（不带 wait），确认返回 downloads 数组；没有下载任务时数组为空是正常结果，不要伪造条目。尝试 chrome_open 的 chrome://settings/ URL，应拒绝这个不支持的页面，不创建它。
+10. 拖拽：从快照里找到可拖拽的块。fixture 的拖拽源可能显示为 `role=group`、名称为空，所以不要靠名称 `find`，也不要假定任意 `group` 都能拖；结合周围文字和位置确认目标，把它的 `ref` 传给 `chrome_drag` 的 `fromRef`，放置区可以用 `toText="放置区"`。确认页面显示放置成功。
+11. 错误码与占用：对已经 `chrome_release` 的标签页用旧 `ref` 调 `chrome_click`，应返回 `TAB_NOT_OWNED`（可能带 `(Chrome detached this tab <n>s ago: <reason>)` 后缀）；已 claim 的页面刷新后用旧 `ref`，应返回 `STALE_ELEMENT`；另一个 Harness 占用的页面，应返回 `TAB_OWNED_BY_ANOTHER_HARNESS`；重载扩展导致租约丢失时返回 `TAB_NOT_LEASED`。逐条记录实际返回的错误码。
 
 如有超时或调试冲突，先检查 chrome_status、当前测试页与前一次工具结果。不要改用其他浏览器自动化。失败操作不能盲目重复。不要要求用户重新安装；报告原始错误及复现步骤。
 
