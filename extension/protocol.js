@@ -1,9 +1,22 @@
 // Shared wire contract; this module has no Node or Chrome side effects.
+// Default bridge port. A second harness can move its bridge with
+// DSH_CHROME_USE_PORT and pair the extension with that port.
 export const PORT = 18791;
 export const MAX_MESSAGE = 8 * 1024 * 1024;
 export const DEADLINE_MS = 15000;
 // Advertised by the extension handshake. Older extensions cannot cancel one command, so the bridge serializes for them.
 export const PARALLEL_TABS = 'parallel-tabs';
+
+// The bridge binds loopback only, so any unprivileged port is acceptable. Low
+// ports need root and are rejected instead of failing at listen time.
+export function parsePort(value, fallback = PORT) {
+  if (value === undefined || value === null || value === '') return fallback;
+  const text = String(value).trim();
+  if (!/^\d{2,5}$/.test(text)) throw new Error(`INVALID_PORT: ${value} is not a port number`);
+  const port = Number(text);
+  if (port < 1024 || port > 65535) throw new Error(`INVALID_PORT: ${value} must be between 1024 and 65535`);
+  return port;
+}
 const tabId = { type: 'integer', minimum: 1, description: 'Exact tab ID returned by chrome_tabs or chrome_open.' };
 const group = { type: 'string', maxLength: 40, description: 'Short Chrome tab-group name (1-40 characters). Reuse the same name for every tab that belongs to one task series so those tabs share one group.' };
 const ref = { type: 'string', maxLength: 100, description: 'Element reference from the latest chrome_snapshot. Refresh after navigation.' };

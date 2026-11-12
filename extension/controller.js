@@ -204,6 +204,11 @@ export class BrowserController {
     if (method === 'Page.frameNavigated' && !params.frame.parentId || method === 'DOM.documentUpdated') {
       state.refs.clear();
       state.revision++;
+      // Requests of the previous document may never report loadingFinished, so
+      // drop them instead of making networkIdle wait for an event that is gone.
+      state.networkRequests.clear();
+      state.networkInFlight = 0;
+      state.lastNetworkActivity = Date.now();
     }
     let entry;
     if (method === 'Runtime.consoleAPICalled') entry = { kind: 'console', level: params.type, text: params.args.map(arg => clip(arg.value ?? arg.description)).join(' ').slice(0, 4000) };
@@ -395,6 +400,9 @@ export class BrowserController {
         if (!src) return { error: 'DRAG_SOURCE_GONE: take a fresh snapshot' };
         const dst = ${dstExpr};
         if (${hasDst} && !dst) return { error: 'DRAG_TARGET_NOT_FOUND: scroll the target into view and retry' };
+        // Pin the resolved target now. A page that rewrites its own text on
+        // dragover would otherwise make a toText lookup fail at drop time.
+        if (dst) dst.setAttribute('data-dsh-drag-dst', ${JSON.stringify(marker)});
         const center = (el) => { const r = el.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; };
         src.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
         const a = center(src);
@@ -411,7 +419,7 @@ export class BrowserController {
         const nativeExpression = `(() => {
           const node = document.querySelector(${JSON.stringify(srcSelector)});
           const src = (node && node.closest('[draggable="true"]')) || node;
-          const dst = ${dstExpr};
+          const dst = document.querySelector(${JSON.stringify(dstSelector)});
           if (!src) return { error: 'DRAG_SOURCE_GONE' };
           const target = dst || document.elementFromPoint(${plan.b.x}, ${plan.b.y});
           if (!target) return { error: 'DRAG_TARGET_NOT_FOUND' };
@@ -462,7 +470,7 @@ export class BrowserController {
     finally { clearTimeout(timer); if (state.loadResolve === resolveLoad) state.loadResolve = null; }
   }
 
-  async execute(action, raw, signal = new AbortController().signal) {
+  async execute(action, raw, signal = new AbortController().signal, options = {}) {
     const args = validateArgs(`chrome_${action}`, raw);
     signal.throwIfAborted();
     const tabId = args.tabId;
@@ -489,6 +497,10 @@ export class BrowserController {
       const url = pageUrl(args.url);
       const title = args.group.trim();
       const tab = await bounded(this.api.tabs.create({ url: 'about:blank', active: false }), signal, 'tabs.create');
+      // Reserve ownership before any other await. If the caller refuses the
+      // reservation, this tab may belong to another connection; never detach it.
+      const reserved = options.onTabCreated ? options.onTabCreated(tab.id) : true;
+      if (reserved === false) throw new Error(`OPEN_FAILED (tab ${tab.id} remains open): LEASE_CONFLICT: this tab is already owned by another Harness`);
       let group;
       let groupError;
       try { group = await this.group(tab.id, title, signal); }
@@ -738,8 +750,27 @@ export class BrowserController {
         } finally {
           await this.command(tabId, 'Runtime.releaseObject', { objectId }, AbortSignal.timeout(1000)).catch(() => {});
         }
+      } else if (args.selector) {
+        // The schema advertises selector, so resolve it the same way scroll_to
+        // does instead of rejecting the call.
+        const located = await cdp('Runtime.evaluate', {
+          returnByValue: true,
+          expression: `(() => {
+            const el = document.querySelector(${JSON.stringify(args.selector)});
+            if (!el) return { error: 'SELECTOR_NOT_FOUND' };
+            if (!el.isConnected) return { error: 'STALE_ELEMENT' };
+            el.scrollIntoView({block:'center', inline:'center', behavior:'instant'});
+            const r = el.getBoundingClientRect();
+            const s = getComputedStyle(el);
+            if (!r.width || !r.height || s.visibility !== 'visible' || s.display === 'none' || Number(s.opacity) === 0) return { error: 'ELEMENT_NOT_VISIBLE' };
+            return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+          })()`,
+        });
+        if (located.exceptionDetails) throw new Error(clip(located.exceptionDetails.exception?.description ?? 'HOVER_FAILED'));
+        if (!located.result.value || located.result.value.error) throw new Error(located.result.value?.error ?? 'HOVER_TARGET');
+        point = located.result.value;
       } else {
-        if (args.x === undefined || args.y === undefined) throw new Error('HOVER_TARGET: give ref or x and y');
+        if (args.x === undefined || args.y === undefined) throw new Error('HOVER_TARGET: give ref, selector, or x and y');
         point = { x: args.x, y: args.y };
       }
       await cdp('Input.dispatchMouseEvent', { type: 'mouseMoved', x: point.x, y: point.y, buttons: 0 });

@@ -1,20 +1,168 @@
 <!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>dsh-chrome-use 本机测试页</title>
-<style>body{font:18px/1.6 system-ui;max-width:720px;margin:60px auto;padding:24px;color:#24324a}input,button{font:inherit;padding:9px;margin:8px 0}label{display:block}button{cursor:pointer}output{display:block;padding:16px;background:#eaf2ff}section{margin-bottom:30px}footer{margin-top:900px}a{color:#185adb}</style></head>
-<body><h1>dsh-chrome-use 本机测试</h1><p>这是专门的测试页面，没有真实账户，也不会向外发送数据。</p>
-<section><label for="name">测试姓名</label><input id="name" autocomplete="off"><button id="greet">显示问候</button><output id="result" aria-live="polite">等待输入</output></section>
-<section><button id="error">产生测试错误</button><button id="disabled" disabled>禁用按钮</button><a href="/second">打开第二页</a></section>
-<label for="secret">测试密码</label><input id="secret" type="password" value="fixture-only-secret">
-<p id="mouse">点击事件：尚未发生</p><footer>滚动测试：页面底部</footer>
+<style>
+body{font:18px/1.6 system-ui;max-width:760px;margin:40px auto;padding:24px;color:#24324a}
+input,textarea,select,button{font:inherit;padding:8px;margin:6px 0}
+label{display:block;margin-top:8px}
+button{cursor:pointer}
+output{display:block;padding:12px;background:#eaf2ff;margin:8px 0}
+section{border-top:1px solid #dbe3ef;padding-top:18px;margin-top:26px}
+.row{display:flex;gap:14px;align-items:center;flex-wrap:wrap}
+#drop-zone{min-height:90px;border:2px dashed #8fa6c6;border-radius:8px;padding:10px;margin:8px 0}
+#drag-source{cursor:grab;background:#ffe9b8;padding:10px;border-radius:8px;width:max-content}
+#scroll-spacer{height:900px}
+.swatch{display:inline-block;width:140px;height:70px;border-radius:6px;margin-right:8px}
+#shadow-host{margin-top:8px}
+iframe{width:100%;height:150px;border:1px solid #c7d3e3;border-radius:6px;margin-top:8px}
+table{border-collapse:collapse;margin-top:8px}td,th{border:1px solid #c7d3e3;padding:4px 10px}
+</style></head>
+<body>
+<h1>dsh-chrome-use 本机测试页</h1>
+<p>专用测试页面，没有真实账户，也不会向外发送数据。所有结果都显示在页面上。</p>
+
+<section><h2>1. 输入与表单</h2>
+<label for="name">测试姓名</label><input id="name" autocomplete="off"><button id="greet">显示问候</button><output id="result" aria-live="polite">等待输入</output>
+<p class="help">密码框与 iframe 已移到单独页面：<a href="/forms">/forms</a>、<a href="/frame">/frame</a>。含密码框或含扩展 iframe 的页面会让 Chrome 拒绝调试，不适合放在主页。</p>
+<label for="editor" contenteditable="false">可编辑区域（contenteditable）</label><div id="editor" contenteditable="true" style="border:1px solid #9caec6;border-radius:6px;min-height:44px;padding:8px">可以在这里输入</div>
+<div class="row"><label for="choice">下拉选择</label><select id="choice"><option value="a">选项 A</option><option value="b">选项 B</option><option value="c">选项 C</option></select>
+<label><input type="checkbox" id="agree"> 同意</label>
+<label><input type="radio" name="plan" id="plan-free" value="free" checked> 免费</label>
+<label><input type="radio" name="plan" id="plan-pro" value="pro"> 专业</label>
+<label for="volume">音量</label><input type="range" id="volume" min="0" max="100" value="30"></div>
+<output id="form-result">表单状态：未变化</output>
+</section>
+
+<section><h2>2. 点击、悬停、右键、禁用</h2>
+<div class="row">
+<button id="dbl">双击我</button><button id="ctx">右键我</button>
+<span id="hover">悬停目标：移上来试试</span><button id="disabled" disabled>禁用按钮</button>
+<button id="error">产生测试错误</button><button id="log">写控制台日志</button>
+</div>
+<output id="pointer-result">指针事件：尚未发生</output>
+</section>
+
+<section><h2>3. 键盘</h2>
+<label for="keylog">按键记录</label><input id="keylog" autocomplete="off" placeholder="在这里输入，按 Enter 提交">
+<output id="key-result">按键：尚未发生</output>
+</section>
+
+<section><h2>4. 拖拽（HTML5 与鼠标）</h2>
+<div id="drag-source" draggable="true">把这块拖到右边的区域</div>
+<div id="drop-zone" aria-label="放置区">放置区：尚未收到</div>
+<div id="mousedrag" role="button" aria-label="鼠标拖拽手柄" tabindex="0" style="width:120px;height:50px;background:#d6e6ff;border-radius:8px;cursor:move;display:flex;align-items:center;justify-content:center">鼠标拖我</div>
+<output id="drag-result">拖拽：尚未发生</output>
+</section>
+
+<section><h2>5. 文件上传</h2>
+<label for="file">普通文件选择</label><input id="file" type="file">
+<button id="file-detached">动态创建文件选择框</button>
+<output id="upload-result">上传：尚未发生</output>
+</section>
+
+<section><h2>6. 对话框、等待与网络</h2>
+<div class="row"><button id="alert">alert</button><button id="confirm">confirm</button><button id="prompt">prompt</button>
+<button id="delayed">800ms 后显示文字</button><button id="slow">请求慢接口</button></div>
+<output id="dialog-result">对话框：尚未发生</output>
+<div id="appears" hidden style="background:#e6f7ec;padding:10px">我原本隐藏，稍后出现</div>
+<output id="network-result">网络：页面加载时已请求 /slow</output>
+</section>
+
+<section><h2>7. 滚动与锚点</h2>
+<button id="scroll-report">报告滚动位置</button>
+<div id="scroll-spacer"></div>
+<div id="scroll-target" style="background:#fff3d6;padding:10px">底部目标：滚动到这里</div>
+<output id="scroll-result">滚动：尚未报告</output>
+</section>
+
+<section><h2>8. 标签页、下载、第二页</h2>
+<a href="/second" id="second">打开第二页</a><br>
+<a href="/second" target="_blank" rel="noreferrer" id="newtab">在新标签页打开第二页</a><br>
+<a href="/download" download="dsh-fixture.txt" id="download">下载测试文件</a>
+</section>
+
+<section><h2>9. 同源 iframe（单独页面）</h2>
+<p>iframe 会让部分 Chrome 扩展注入自己的 frame，进而导致调试被拒。单独打开 <a href="/frame">/frame</a> 测试，主页不加载 iframe。</p>
+</section>
+
+<section><h2>10. 阴影 DOM、表格与列表</h2>
+<div id="shadow-host"></div>
+<table><tr><th>名称</th><th>数量</th></tr><tr><td>苹果</td><td>3</td></tr><tr><td>香蕉</td><td>5</td></tr></table>
+<ul><li>列表项一</li><li>列表项二</li><li>列表项三</li></ul>
+</section>
+
+<section><h2>11. 截图与导出</h2>
+<div class="swatch" style="background:#e4572e"></div><div class="swatch" style="background:#17a398"></div><div class="swatch" style="background:#4c6ef5"></div>
+</section>
+
+<footer style="margin-top:80px">页面底部：测试结束</footer>
 <script>
+const show = (id, text) => { document.querySelector(id).textContent = text; };
+const name = document.querySelector('#name');
 document.querySelector('#greet').onclick = event => {
-  document.querySelector('#result').textContent = '你好，' + document.querySelector('#name').value;
-  document.querySelector('#mouse').textContent = '点击事件：isTrusted=' + event.isTrusted;
+  show('#result', '你好，' + name.value);
+  show('#pointer-result', '点击事件：isTrusted=' + event.isTrusted);
   console.log('bridge-test-greeting');
 };
+document.querySelector('#dbl').ondblclick = () => show('#pointer-result', '双击：成功');
+document.querySelector('#ctx').oncontextmenu = event => { event.preventDefault(); show('#pointer-result', '右键：成功'); };
+document.querySelector('#hover').onmouseenter = () => show('#pointer-result', '悬停：成功');
 document.querySelector('#error').onclick = () => {
   console.error('bridge-test-console-error');
   fetch('/expected-error?token=do-not-record').then(r => r.text());
   setTimeout(() => { throw new Error('bridge-test-exception'); }, 0);
 };
+document.querySelector('#log').onclick = () => { console.log('bridge-test-log', { n: 1 }); console.warn('bridge-test-warn'); };
+name.oninput = () => show('#form-result', '表单状态：姓名=' + name.value);
+document.querySelector('#choice').onchange = event => show('#form-result', '表单状态：选择=' + event.target.value);
+document.querySelector('#agree').onchange = event => show('#form-result', '表单状态：同意=' + event.target.checked);
+document.querySelector('#volume').oninput = event => show('#form-result', '表单状态：音量=' + event.target.value);
+document.querySelector('#editor').oninput = event => show('#form-result', '表单状态：可编辑=' + event.target.textContent.trim());
+
+const keylog = document.querySelector('#keylog');
+keylog.onkeydown = event => show('#key-result', '按键：' + event.key + (event.ctrlKey ? ' +Ctrl' : ''));
+keylog.onkeyup = event => { if (event.key === 'Enter') show('#key-result', 'Enter 已提交：' + keylog.value); };
+
+const source = document.querySelector('#drag-source');
+const zone = document.querySelector('#drop-zone');
+source.ondragstart = event => event.dataTransfer.setData('text/plain', 'drag-payload');
+zone.ondragover = event => { event.preventDefault(); zone.textContent = '放置区：可以放下'; };
+zone.ondrop = event => {
+  event.preventDefault();
+  zone.textContent = '放置区：收到 ' + event.dataTransfer.getData('text/plain');
+  show('#drag-result', 'HTML5 拖拽：成功');
+};
+const handle = document.querySelector('#mousedrag');
+let dragging = false, startX = 0;
+handle.onmousedown = event => { dragging = true; startX = event.clientX; show('#drag-result', '鼠标拖拽：按住'); };
+document.onmouseup = event => {
+  if (!dragging) return;
+  dragging = false;
+  show('#drag-result', '鼠标拖拽：位移 ' + Math.round(event.clientX - startX) + 'px');
+};
+
+document.querySelector('#file').onchange = event => show('#upload-result', '上传：' + event.target.files.length + ' 个文件');
+document.querySelector('#file-detached').onclick = () => {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.onchange = () => show('#upload-result', '动态上传：' + input.files.length + ' 个文件');
+  input.click();
+};
+
+document.querySelector('#alert').onclick = () => { alert('测试 alert'); show('#dialog-result', '对话框：alert 已关闭'); };
+document.querySelector('#confirm').onclick = () => { show('#dialog-result', '对话框：confirm 返回 ' + confirm('测试 confirm')); };
+document.querySelector('#prompt').onclick = () => { show('#dialog-result', '对话框：prompt 返回 ' + JSON.stringify(prompt('测试 prompt', '默认值'))); };
+document.querySelector('#delayed').onclick = () => setTimeout(() => {
+  document.querySelector('#appears').hidden = false;
+  document.querySelector('#appears').textContent = '我现在出现了';
+  show('#dialog-result', '等待：文字已出现');
+}, 800);
+document.querySelector('#slow').onclick = () => fetch('/slow?ms=600').then(r => r.text()).then(text => show('#network-result', '网络：' + text));
+document.querySelector('#scroll-report').onclick = () => show('#scroll-result', '滚动位置：' + Math.round(window.scrollY));
+
+const host = document.querySelector('#shadow-host');
+const root = host.attachShadow({ mode: 'open' });
+root.innerHTML = '<button id="shadow-button">阴影按钮</button><span id="shadow-result">阴影：未点击</span>';
+root.querySelector('#shadow-button').onclick = () => { root.querySelector('#shadow-result').textContent = '阴影：已点击'; };
+
+fetch('/slow?ms=500').catch(() => {});
 </script></body></html>

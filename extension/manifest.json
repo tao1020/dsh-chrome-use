@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "dsh-chrome-use",
   "description": "Let DeepSeek Harness control Chrome tabs, with several agent sessions working in parallel.",
-  "version": "0.6.8",
+  "version": "0.7.0",
   "minimum_chrome_version": "120",
   "permissions": [
     "debugger",
@@ -27,7 +27,7 @@
     }
   },
   "content_security_policy": {
-    "extension_pages": "script-src 'self'; object-src 'none'; connect-src ws://127.0.0.1:18791"
+    "extension_pages": "script-src 'self'; object-src 'none'; connect-src ws://127.0.0.1:*"
   },
   "icons": {
     "16": "icon-16.png",

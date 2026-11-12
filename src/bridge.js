@@ -4,15 +4,22 @@ import { mkdir, readFile, writeFile, rename } from 'node:fs/promises';
 import { join } from 'node:path';
 import { WebSocketServer, WebSocket } from 'ws';
 import { PORT, MAX_MESSAGE, DEADLINE_MS, PARALLEL_TABS } from '../extension/protocol.js';
+import { classifyPairingCode, generatePairingCode, normalizePairingCode } from '../extension/pairing-code.js';
+import { candidatePorts, portStateDir, preferencePath, probePort, readPreferredPort, writePreferredPort } from './port-selector.js';
 
 const equal = (a, b) => typeof a === 'string' && typeof b === 'string' && a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b));
 const extensionOrigin = /^chrome-extension:\/\/[a-p]{32}$/;
 const CLAIM_WAIT_MS = 10000;
 
 export class Bridge {
-  constructor({ port = PORT, stateDir, deadlineMs = DEADLINE_MS, claimWaitMs = CLAIM_WAIT_MS } = {}) {
-    this.port = port;
+  constructor({ port = PORT, auto = false, portCandidates, baseStateDir, stateDir, probe = probePort, deadlineMs = DEADLINE_MS, claimWaitMs = CLAIM_WAIT_MS } = {}) {
+    this.port = auto ? undefined : port;
+    this.requestedPort = auto ? undefined : port;
+    this.auto = auto;
+    this.portCandidates = portCandidates;
+    this.baseStateDir = baseStateDir;
     this.stateDir = stateDir;
+    this.probe = probe;
     this.deadlineMs = deadlineMs;
     this.claimWaitMs = claimWaitMs;
     this.claims = new Map();
@@ -30,40 +37,94 @@ export class Bridge {
   }
 
   async start() {
-    if (this.stateDir) {
-      await mkdir(this.stateDir, { recursive: true, mode: 0o700 });
+    if (!this.auto) {
       try {
-        this.identity = JSON.parse(await readFile(join(this.stateDir, 'pairing.json'), 'utf8'));
-        if (!extensionOrigin.test(this.identity.origin) || !/^[a-f0-9]{64}$/.test(this.identity.token)) throw new Error('Invalid saved pairing');
+        await this.listen(this.port);
       } catch (error) {
-        if (error.code !== 'ENOENT') throw new Error(`PAIRING_STATE_ERROR: ${error.message}`);
+        if (error.message.startsWith('PAIRING_STATE_ERROR')) throw error;
+        throw this.startFailure(error, this.port);
       }
+      this.requestedPort = this.port;
+      return;
     }
-    this.http = createServer((req, res) => {
+
+    const preferred = this.baseStateDir ? await readPreferredPort(preferencePath(this.baseStateDir)) : undefined;
+    const candidates = this.portCandidates ?? candidatePorts(preferred);
+    this.requestedPort = candidates[0];
+    for (const candidate of candidates) {
+      if (!(await this.probe(candidate))) continue;
+      try {
+        await this.listen(candidate);
+      } catch (error) {
+        if (error.code === 'EADDRINUSE') continue;
+        if (error.message.startsWith('PAIRING_STATE_ERROR')) throw error;
+        throw this.startFailure(error, candidate);
+      }
+      if (this.baseStateDir) {
+        await writePreferredPort(preferencePath(this.baseStateDir), this.port).catch(error => { this.lastError = `PORT_PREFERENCE_WRITE_FAILED: ${error.message}`; });
+      }
+      return;
+    }
+    throw new Error(`BRIDGE_START_FAILED: no free loopback port among ${candidates.join(', ')}. Set DSH_CHROME_USE_PORT to a free port.`);
+  }
+
+  startFailure(error, port) {
+    return new Error(`BRIDGE_START_FAILED: ${error.code ?? error.message}. Port ${port} is unavailable; stop the other process or start this Harness with DSH_CHROME_USE_PORT set to a free port.`);
+  }
+
+  async listen(port) {
+    const stateDir = this.baseStateDir ? portStateDir(this.baseStateDir, port) : this.stateDir;
+    const http = createServer((req, res) => {
       res.writeHead(404, { 'Content-Type': 'text/plain', 'Cache-Control': 'no-store' });
       res.end('dsh-chrome-use accepts only authenticated extension connections.');
     });
-    this.http.requestTimeout = 5000;
-    this.http.headersTimeout = 5000;
-    this.ws = new WebSocketServer({ noServer: true, maxPayload: MAX_MESSAGE, perMessageDeflate: false });
-    this.http.on('upgrade', (req, socket, head) => {
-      if (this.closed || req.url !== '/bridge' || req.headers.host !== `127.0.0.1:${this.port}` || !extensionOrigin.test(req.headers.origin ?? '') || this.ws.clients.size >= 4) {
+    http.requestTimeout = 5000;
+    http.headersTimeout = 5000;
+    const ws = new WebSocketServer({ noServer: true, maxPayload: MAX_MESSAGE, perMessageDeflate: false });
+    const boundPort = () => http.address()?.port ?? port;
+    http.on('upgrade', (req, socket, head) => {
+      if (this.closed || req.url !== '/bridge' || req.headers.host !== `127.0.0.1:${boundPort()}` || !extensionOrigin.test(req.headers.origin ?? '') || ws.clients.size >= 4) {
         socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
         return;
       }
-      this.ws.handleUpgrade(req, socket, head, client => this.accept(client, req.headers.origin));
+      ws.handleUpgrade(req, socket, head, client => this.accept(client, req.headers.origin));
     });
     await new Promise((resolve, reject) => {
-      this.http.once('error', reject);
-      this.http.listen(this.port, '127.0.0.1', () => {
-        this.http.off('error', reject);
-        this.port = this.http.address().port;
+      http.once('error', reject);
+      http.listen(port, '127.0.0.1', () => {
+        http.off('error', reject);
         resolve();
       });
-    }).catch(error => { this.ws.close(); throw new Error(`BRIDGE_START_FAILED: ${error.code ?? error.message}. Another Harness profile may already own port ${this.port}.`); });
-    this.http.on('error', error => { this.lastError = error.message; });
+    }).catch(error => {
+      ws.close();
+      const failure = new Error(error.code ?? error.message);
+      failure.code = error.code;
+      throw failure;
+    });
+    let identity;
+    if (stateDir) {
+      try {
+        await mkdir(stateDir, { recursive: true, mode: 0o700 });
+        try {
+          identity = JSON.parse(await readFile(join(stateDir, 'pairing.json'), 'utf8'));
+          if (!extensionOrigin.test(identity.origin) || !/^[a-f0-9]{64}$/.test(identity.token)) throw new Error('Invalid saved pairing');
+        } catch (error) {
+          if (error.code !== 'ENOENT') throw error;
+        }
+      } catch (error) {
+        ws.close();
+        await new Promise(resolve => http.close(resolve));
+        throw new Error(`PAIRING_STATE_ERROR: ${error.message}`);
+      }
+    }
+    http.on('error', error => { this.lastError = error.message; });
+    this.http = http;
+    this.ws = ws;
+    this.port = boundPort();
+    this.stateDir = stateDir;
+    this.identity = identity;
     this.heartbeat = setInterval(() => {
-      for (const client of this.ws.clients) {
+      for (const client of ws.clients) {
         if (client.alive === false) client.terminate();
         else {
           client.alive = false;
@@ -77,13 +138,28 @@ export class Bridge {
   }
 
   status() {
-    return { connected: this.peer?.readyState === WebSocket.OPEN, port: this.port, extensionVersion: this.peer?.extensionVersion ?? null, claimedTabs: [...this.claims.keys()], ...(this.lastError ? { lastError: this.lastError } : {}) };
+    return {
+      connected: this.peer?.readyState === WebSocket.OPEN,
+      port: this.port,
+      ...(this.requestedPort !== undefined && this.requestedPort !== this.port ? { requestedPort: this.requestedPort } : {}),
+      extensionVersion: this.peer?.extensionVersion ?? null,
+      claimedTabs: [...this.claims.keys()],
+      ...(this.lastError ? { lastError: this.lastError } : {}),
+    };
   }
 
   pair() {
     if (this.peer) throw new Error('ALREADY_CONNECTED: disconnect in the extension before pairing again');
-    this.pairing = { code: String(randomInt(10000000, 100000000)), expires: Date.now() + 120000, attempts: 0 };
-    return { code: this.pairing.code, port: this.port, expiresInSeconds: 120, instructions: 'Open dsh-chrome-use in the Chrome toolbar, enter this code and click Connect. Connecting permits access to all normal tabs in this Chrome. Do not enter the code into a website or post it publicly.' };
+    const code = String(randomInt(10000000, 100000000));
+    const pairingCode = generatePairingCode(this.port, () => randomInt(0, 0x1000000));
+    this.pairing = { code, pairingCode, expires: Date.now() + 120000, attempts: 0 };
+    return {
+      code,
+      pairingCode,
+      port: this.port,
+      expiresInSeconds: 120,
+      instructions: `Open dsh-chrome-use in the Chrome toolbar and enter the 8-character pairing code for port ${this.port}. New extensions read the port from the code; older extensions use the 8-digit compatibility code only on port 18791. Connecting permits access to all normal tabs in this Chrome. Do not enter the code into a website or post it publicly.`,
+    };
   }
 
   accept(client, origin) {
@@ -118,7 +194,22 @@ export class Bridge {
           this.authFailures = this.authFailures.filter(time => time > Date.now() - 60000);
           if (this.authFailures.length >= 10) throw new Error('PAIRING_RATE_LIMIT');
           let identity;
-          if (message.type === 'pair' && this.pairing && Date.now() < this.pairing.expires && ++this.pairing.attempts <= 5 && equal(message.code, this.pairing.code)) {
+          if (message.type === 'pair') {
+            const pairing = this.pairing;
+            let matched = false;
+            if (pairing && Date.now() < pairing.expires) {
+              pairing.attempts += 1;
+              if (pairing.attempts <= 5) {
+                const submitted = normalizePairingCode(message.code);
+                const classified = classifyPairingCode(submitted);
+                if (classified?.kind === 'encoded') matched = classified.port === this.port && equal(classified.code, pairing.pairingCode);
+                else if (classified?.kind === 'legacy') matched = equal(classified.code, pairing.code);
+              }
+            }
+            if (!matched) {
+              this.authFailures.push(Date.now());
+              throw new Error('AUTH_FAILED: request a fresh pairing code from Harness');
+            }
             if (this.peer) throw new Error('BROWSER_ALREADY_CONNECTED');
             // Reserve before file I/O so two pairing requests cannot win.
             this.pairing = undefined;

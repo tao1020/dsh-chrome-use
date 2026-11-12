@@ -169,6 +169,18 @@ test('a grouping failure keeps the new tab usable and reports why', async () => 
   assert.equal(result.group, null);
   assert.match(result.groupError, /TAB_IS_PINNED/);
 });
+test('open advertises the created tab before grouping and fails closed on a lease collision', async () => {
+  const { controller, api, calls } = fixture();
+  let reserved;
+  const result = await controller.execute('open', { url: 'https://example.com/', group: 'series' }, undefined, { onTabCreated: tabId => { reserved = tabId; assert.deepEqual(calls.find(([method]) => method === 'tabs.group'), undefined); return true; } });
+  assert.equal(reserved, 9);
+  assert.equal(result.tabId, 9);
+  await controller.execute('claim', { tabId: 7 });
+  const before = calls.filter(([method]) => method === 'detach').length;
+  api.tabs.create = async () => ({ id: 7, url: 'about:blank', windowId: 1 });
+  await assert.rejects(controller.execute('open', { url: 'https://example.com/', group: 'series' }, undefined, { onTabCreated: () => false }), /LEASE_CONFLICT/);
+  assert.equal(calls.filter(([method]) => method === 'detach').length, before);
+});
 test('closing a tab removes it and forgets its debugger state', async () => {
   const { controller, calls } = fixture();
   await controller.execute('claim', { tabId: 7 });
@@ -216,6 +228,56 @@ test('hover moves the pointer without pressing a button', async () => {
   assert.deepEqual([result.x, result.y], [20, 30]);
   const mouse = calls.filter(([method]) => method === 'Input.dispatchMouseEvent').map(([, params]) => params.type);
   assert.deepEqual(mouse, ['mouseMoved']);
+});
+
+test('hover accepts a selector, matching the schema', async () => {
+  const { controller, calls } = fixture({
+    'Runtime.evaluate': params => {
+      assert.match(params.expression, /querySelector\("#hover"\)/);
+      return { result: { value: { x: 100, y: 200 } } };
+    },
+  });
+  await controller.execute('claim', { tabId: 7 });
+  const result = await controller.execute('hover', { tabId: 7, selector: '#hover' });
+  assert.deepEqual([result.x, result.y], [100, 200]);
+  const moved = calls.find(([method, params]) => method === 'Input.dispatchMouseEvent' && params.type === 'mouseMoved')[1];
+  assert.deepEqual([moved.x, moved.y], [100, 200]);
+});
+
+test('hover still rejects a call with neither ref, selector nor coordinates', async () => {
+  const { controller } = fixture();
+  await controller.execute('claim', { tabId: 7 });
+  await assert.rejects(controller.execute('hover', { tabId: 7 }), /HOVER_TARGET: give ref, selector, or x and y/);
+});
+
+test('drag with toText pins the target so a page rewrite cannot break the drop', async () => {
+  const plan = { a: { x: 10, y: 20 }, b: { x: 120, y: 160 }, native: true, aIn: true, bIn: true };
+  const expressions = [];
+  const { controller, calls } = fixture({
+    'Runtime.evaluate': params => {
+      expressions.push(params.expression);
+      if (params.expression.includes('aIn')) return { result: { value: plan } };
+      return { result: { value: { accepted: true } } };
+    },
+  });
+  await controller.execute('claim', { tabId: 7 });
+  const snapshot = await controller.execute('snapshot', { tabId: 7 });
+  await controller.execute('drag', { tabId: 7, fromRef: snapshot.elements[0].ref, toText: '放置区' });
+  const planExpression = expressions.find(text => text.includes('aIn'));
+  assert.match(planExpression, /setAttribute\('data-dsh-drag-dst'/);
+  const dropExpression = expressions.find(text => text.includes('DragEvent'));
+  assert.match(dropExpression, /data-dsh-drag-dst/);
+  assert.doesNotMatch(dropExpression, /innerText/);
+});
+
+test('networkIdle forgets requests that belong to the previous document', async () => {
+  const { controller, listeners } = fixture();
+  await controller.execute('claim', { tabId: 7 });
+  listeners.event({ tabId: 7 }, 'Network.requestWillBeSent', { requestId: 'r1', request: { url: 'https://example.com/slow' } });
+  listeners.event({ tabId: 7 }, 'Page.frameNavigated', { frame: { id: 7, parentId: undefined } });
+  const quiet = await controller.execute('wait', { tabId: 7, networkIdle: true, timeoutMs: 2000 });
+  assert.equal(quiet.gone, false);
+  assert.ok(quiet.waitedMs < 2000);
 });
 
 test('select sets the option through the page and reports its label', async () => {

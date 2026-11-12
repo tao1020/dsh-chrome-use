@@ -3,8 +3,12 @@ import { createInterface } from 'node:readline';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { Bridge } from '../src/bridge.js';
-import { validateArgs } from '../extension/protocol.js';
-const bridge = new Bridge({ stateDir: join(homedir(), '.dsh', 'dsh-chrome-use') });
+import { validateArgs, parsePort } from '../extension/protocol.js';
+const configured = process.env.DSH_CHROME_USE_PORT?.trim();
+const port = configured ? parsePort(configured) : undefined;
+const baseDir = join(homedir(), '.dsh', 'dsh-chrome-use');
+// The bridge selects the effective port and derives its pairing identity from it.
+const bridge = new Bridge({ ...(port === undefined ? { auto: true } : { port }), baseStateDir: baseDir });
 await bridge.start();
 console.log(JSON.stringify({ status: bridge.status(), instructions: 'Saved pairing reconnects automatically. For first-time pairing, enter {"action":"pair"}.' }));
 let stopped = false;

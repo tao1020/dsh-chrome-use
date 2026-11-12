@@ -5,14 +5,17 @@ header { display: flex; align-items: center; gap: 12px; padding: 23px 22px 18px;
 .mark { width: 42px; height: 42px; border-radius: 12px; object-fit: cover; }
 h1 { font-size: 20px; line-height: 1.25; margin: 0; font-weight: 650; }
 header p { margin: 3px 0 0; color: #657083; font-size: 12px; }
-.intro { padding: 16px 22px; background: #f3f7fd; border-bottom: 1px solid #dce4ef; }
-.intro p { margin: 0; font-size: 15px; line-height: 1.6; }
-.intro .intro-link { margin-top: 8px; font-weight: 600; }
 main { padding: 18px 22px 8px; }
 #status { margin: 0 0 18px; font-weight: 600; }
 #status.connected { color: #16634a; }
 label { display: block; margin-bottom: 7px; font-size: 12px; }
 .pair-row { display: flex; gap: 8px; }
+.pair-row .field { flex: 1; min-width: 0; }
+.pair-row button { padding: 10px 13px; }
+#code { text-transform: uppercase; }
+#connections { margin: 0 0 14px; padding: 0; list-style: none; }
+#connections li { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 5px 0; }
+#connections .link { background: none; border: 0; color: #657083; padding: 2px 4px; font-size: 12px; text-decoration: underline; }
 input { min-width: 0; width: 100%; border: 1px solid #9caec6; padding: 10px; font: inherit; border-radius: 6px; letter-spacing: 2px; }
 button { font: inherit; font-weight: 600; background: #185adb; color: white; border: 1px solid transparent; border-radius: 6px; padding: 10px 15px; cursor: pointer; white-space: nowrap; }
 button:disabled { opacity: .45; cursor: default; }

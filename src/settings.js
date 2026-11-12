@@ -25,7 +25,7 @@ export function registerSettings(ctx, bridge) {
     async read() {
       try {
         const status = bridge.status();
-        return parseStatus({ connected: status.connected, extensionVersion: status.extensionVersion, tabCount: status.claimedTabs.length });
+        return parseStatus({ connected: status.connected, port: status.port, ...(status.requestedPort === undefined ? {} : { requestedPort: status.requestedPort }), extensionVersion: status.extensionVersion, tabCount: status.claimedTabs.length });
       } catch (error) { report('read', error); throw error; }
     },
     async pair() {

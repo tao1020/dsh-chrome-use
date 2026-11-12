@@ -6,7 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { Bridge } from './bridge.js';
 import { storeUrl } from './links.js';
 import { registerChromeUseSkill } from './skill.js';
-import { TOOLS, validateArgs } from '../extension/protocol.js';
+import { TOOLS, validateArgs, parsePort } from '../extension/protocol.js';
 import { buildIssueReport } from './report.js';
 import { createRequire } from 'node:module';
 
@@ -15,6 +15,11 @@ const pluginVersion = createRequire(import.meta.url)('../package.json').version;
 
 export const name = 'dsh-chrome-use';
 export const inject = ['tools'];
+
+export function bridgeOptions(env, baseStateDir) {
+  const configured = env?.DSH_CHROME_USE_PORT?.trim();
+  return configured ? { port: parsePort(configured), baseStateDir } : { auto: true, baseStateDir };
+}
 
 // DSH accepts a JSON Schema subset. Keep full bounds in the shared validator.
 export function harnessParameters(parameters) {
@@ -98,7 +103,9 @@ export function renderOutput(name, value) {
 
 export async function apply(ctx) {
   const stateDir = join(homedir(), '.dsh', 'dsh-chrome-use');
-  const bridge = new Bridge({ stateDir });
+  // An explicit port is strict. Without one, the bridge remembers the last
+  // successful auto port and falls back through loopback candidates.
+  const bridge = new Bridge(bridgeOptions(process.env, stateDir));
   // Register startup itself with Cordis so shutdown also waits for a pending start.
   await ctx.effect(async () => {
     await bridge.start();

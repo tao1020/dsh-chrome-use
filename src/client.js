@@ -1,15 +1,25 @@
 window.__ModuleLoader__.load({ id: 'dsh-chrome-use', factory: (require) => { const module = { exports: {} };
 function parseStatus(value) {
   if (!value || typeof value.connected !== 'boolean' || !Number.isSafeInteger(value.tabCount) || value.tabCount < 0 || !(value.extensionVersion === null || typeof value.extensionVersion === 'string')) throw new Error('Invalid Chrome connection status');
-  return { connected: value.connected, tabCount: value.tabCount, extensionVersion: value.extensionVersion };
+  const status = { connected: value.connected, tabCount: value.tabCount, extensionVersion: value.extensionVersion };
+  for (const field of ['port', 'requestedPort']) {
+    if (value[field] === undefined) continue;
+    if (!Number.isSafeInteger(value[field]) || value[field] < 1024 || value[field] > 65535) throw new Error(`Invalid Chrome connection ${field}`);
+    status[field] = value[field];
+  }
+  return status;
 }
+const PAIRING_CODE_RE = /^[0-9A-HJKMNP-TV-Z]{8}$/;
 function parsePairing(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid pairing response');
   if (typeof value.code !== 'string' || !/^[0-9]{8}$/.test(value.code)) throw new Error('Invalid pairing code');
+  if (value.pairingCode !== undefined) {
+    if (typeof value.pairingCode !== 'string' || !PAIRING_CODE_RE.test(value.pairingCode) || !/[A-Z]/.test(value.pairingCode)) throw new Error('Invalid pairing code');
+  }
   if (!Number.isSafeInteger(value.port) || value.port < 1 || value.port > 65535) throw new Error('Invalid pairing port');
   if (!Number.isSafeInteger(value.expiresInSeconds) || value.expiresInSeconds < 1 || value.expiresInSeconds > 600) throw new Error('Invalid pairing lifetime');
   if (typeof value.instructions !== 'string' || value.instructions.length > 2000) throw new Error('Invalid pairing instructions');
-  return { code: value.code, port: value.port, expiresInSeconds: value.expiresInSeconds, instructions: value.instructions };
+  return { code: value.code, ...(value.pairingCode === undefined ? {} : { pairingCode: value.pairingCode }), port: value.port, expiresInSeconds: value.expiresInSeconds, instructions: value.instructions };
 }
 const statusCodec = { mode: 'strict', typeSymbol: 'dsh-chrome-use#ConnectionStatus', schema: { parse: parseStatus }, create: () => ({ parse: parseStatus }) };
 const pairingCodec = { mode: 'strict', typeSymbol: 'dsh-chrome-use#PairingCode', schema: { parse: parsePairing }, create: () => ({ parse: parsePairing }) };
@@ -58,7 +68,7 @@ async function checkRelease(current, fetcher = fetch) {
   } finally { clearTimeout(timer); }
 }
 
-const packageVersion = "0.6.8";
+const packageVersion = "0.7.0";
 // Wrapped by scripts/build-client.mjs for the Harness browser module loader.
 const React = require('react');
 const { createElement: h, useState, useEffect, useRef } = React;
@@ -109,11 +119,11 @@ function StatusPage({ read, pair }) {
       const stamp = Date.now();
       if (!alive.current) return;
       setNow(stamp);
-      setPairing({ code: value.code, port: value.port, expiresAt: stamp + value.expiresInSeconds * 1000 });
+      setPairing({ code: value.pairingCode ?? value.code, pairingCode: value.pairingCode, legacyCode: value.code, port: value.port, expiresAt: stamp + value.expiresInSeconds * 1000 });
     } catch (error) {
       if (!alive.current) return;
       const message = String(error && error.message ? error.message : error);
-      setPairing({ error: message.includes('ALREADY_CONNECTED') ? 'Chrome 已连接，无需新的配对码。如需重新配对，请先在扩展弹窗中点击“断开连接”。' : message.includes('BRIDGE_STOPPED') ? 'Harness 插件已停止，请重启 Harness 后再试。' : `生成配对码失败：${message}` });
+      setPairing({ error: message.includes('ALREADY_CONNECTED') ? 'Chrome 已连接，无需新的配对码。如需重新配对，请先在扩展弹窗中点击“断开全部连接”。' : message.includes('BRIDGE_STOPPED') ? 'Harness 插件已停止，请重启 Harness 后再试。' : `生成配对码失败：${message}` });
     }
   }
   async function copyCode() {
@@ -141,18 +151,22 @@ function StatusPage({ read, pair }) {
     h('h3', null, '连接状态'),
     h('p', { role: 'status' }, state.loading && !value ? '正在查询 Chrome 连接…' : state.error && !value ? state.error : connected ? '已连接 Chrome' : '未连接 Chrome'),
     value && h('p', null, `扩展版本：${value.extensionVersion || '未知'} · 正在调试的标签页：${value.tabCount}`),
-    value && !connected && h('p', null, '请生成配对码，在 Chrome 工具栏的扩展弹窗中输入并点击“连接”。'),
-    connected && h('p', null, '如需重新配对，请先在扩展弹窗中点击“断开连接”，再回到这里生成新的配对码。'),
+    value?.port && h('p', { role: 'status' }, value.requestedPort && value.requestedPort !== value.port ? `本机端口 ${value.port}（${value.requestedPort} 被占用，已自动改用）` : `本机端口 ${value.port}`),
+    value && !connected && h('p', null, '请生成配对码，在 Chrome 工具栏的扩展弹窗中粘贴并点击“连接”。'),
+    connected && h('p', null, '如需重新配对，请先在扩展弹窗中点击“断开全部连接”，再回到这里生成新的配对码。'),
     h('button', { onClick: refresh, disabled: state.loading, style: buttonStyle }, state.loading ? '刷新中…' : '刷新状态'));
   const pairBlock = h('div', { key: 'pair' },
     h('h3', null, '配对 Chrome 扩展'),
-    h('p', null, '点击下面的按钮生成 8 位配对码，然后在 Chrome 工具栏打开 dsh-chrome-use 扩展，输入配对码并点击“连接”。配对码 2 分钟内有效，生成新码会让旧码立即失效。'),
+    h('p', null, '点击下面的按钮生成 8 位配对码，然后在 Chrome 工具栏打开 dsh-chrome-use 扩展，粘贴配对码并点击“连接”。新配对码已经包含端口，扩展会自动识别，不需要手填端口。配对码 2 分钟内有效，生成新码会让旧码立即失效。'),
     h('button', { onClick: requestPairing, disabled: pairing.loading, style: buttonStyle }, pairing.loading ? '正在生成…' : pairing.code || expired ? '重新生成配对码' : '生成配对码'),
     pairing.error && h('p', { role: 'alert', style: { color: 'var(--dsh-danger, #d9534f)' } }, pairing.error),
     pairing.code && !expired && h('div', { style: { marginTop: 12 } },
       h('code', { style: codeStyle, 'aria-label': '配对码' }, pairing.code),
       h('p', { role: 'status' }, `剩余有效时间：${countdown}（本机端口 ${pairing.port}）`),
-      h('button', { onClick: copyCode, style: buttonStyle }, pairing.copied ? '已复制' : '复制配对码')),
+      h('button', { onClick: copyCode, style: buttonStyle }, pairing.copied ? '已复制' : '复制配对码'),
+      pairing.pairingCode && pairing.port === 18791 && h('details', null,
+        h('summary', null, '旧版扩展（仅 18791）'),
+        h('p', null, `旧版扩展只认纯数字兼容码，并且在 18791 上使用：${pairing.legacyCode}`))),
     expired && h('p', { role: 'status' }, '配对码已过期，请点击“重新生成配对码”。'),
     h('p', null, '如果按钮不可用，也可以在对话中让 Harness 调用 chrome_pair，拿到的是同一种临时码。'));
   const installBlock = h('div', { key: 'install' },
@@ -170,7 +184,7 @@ function StatusPage({ read, pair }) {
   return h('section', { style: { padding: 24 }, 'aria-label': 'dsh-chrome-use' },
     h('h2', null, 'dsh-chrome-use'),
     h('p', null, `Harness 插件版本：${packageVersion}`),
-    h('p', null, link(repositoryUrl, '觉得好用？点个 Star ⭐ 这对我们很重要')),
+    h('p', null, link(repositoryUrl, '喜欢这个插件？去 GitHub 点个 Star')),
     settingsSectionOrder(connected).map(key => blocks[key]));
 }
 module.exports.inject = ['slots', 'remote'];
