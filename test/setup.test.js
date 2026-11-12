@@ -18,6 +18,7 @@ test('popup asks only for the pairing code, with no port or usage text', async (
   assert.doesNotMatch(html, /id="port"/);
   assert.doesNotMatch(html, /使用方法：/);
   assert.doesNotMatch(html, /class="intro"/);
+  assert.match(html, /连接你的所有 Harness 与浏览器/);
 });
 
 test('popup shows connection errors right below the pairing-code row', async () => {

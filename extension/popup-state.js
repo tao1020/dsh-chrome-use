@@ -22,17 +22,23 @@ export function popupState({ connections = [], reconnecting = false } = {}) {
   };
 }
 
-export function connectionRow({ port, connected = false, version = null, error = '' } = {}) {
+export function connectionRow({ port, connected = false, version = null, name = null, error = '' } = {}) {
   const state = connected ? 'connected' : error ? 'error' : 'saved';
   return {
     port,
+    name: name || null,
     state,
     connected: Boolean(connected),
-    text: connected
-      ? `端口 ${port} · 已连接${version ? ` · ${version}` : ''}`
+    // A harness may name itself when it connects; the port stays visible so the
+    // popup still tells the user exactly which bridge the row refers to.
+    title: name ? `${name} · ${port}` : `端口 ${port}`,
+    meta: connected
+      ? `已连接${version ? ` · ${version}` : ''}`
       : error
-        ? `端口 ${port} · 未连接：${error}`
-        : `端口 ${port} · 已保存，未连接`,
+        ? '未连接'
+        : '已保存，未连接',
+    error: error || '',
+    hint: error ? 'Harness 可能已离线或还没启动。' : '',
     canConnect: !connected,
     canForget: true,
   };

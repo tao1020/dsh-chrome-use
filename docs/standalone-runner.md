@@ -18,7 +18,7 @@
 DSH_CHROME_USE_PORT=18793 node scripts/dev.mjs
 ```
 
-未设置 `DSH_CHROME_USE_PORT` 时，运行器先试上次成功的端口，再试 18791、18793..18799，并跳过 18792；设置时严格使用指定端口。端口 18792 留给 `scripts/fixture.mjs` 测试页，不要用于 bridge。
+未设置 `DSH_CHROME_USE_PORT` 时，运行器先试上次成功的端口，再试 18791、18793..18801，并跳过 18792；设置时严格使用指定端口。端口 18792 留给 `scripts/fixture.mjs` 测试页，不要用于 bridge。
 
 进程会一直运行，等待标准输入。首次使用先配对：
 

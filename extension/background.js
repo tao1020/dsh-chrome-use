@@ -7,7 +7,7 @@ import { classifyPairingCode } from './pairing-code.js';
 // keeps its own socket, pairing token, command map and cleanup generation. The
 // only shared authority is the lease table below: it decides which connection
 // may touch a tab. Bridge-local chat claims stay unchanged.
-const MAX_CONNECTIONS = 4;
+const MAX_CONNECTIONS = 10;
 // Cross-Harness messages are stored here so a reconnect, or an MV3 worker
 // restart, does not lose them. They are data from other agents, never user
 // instructions; the bridge only surfaces a count until a tool reads the text.
@@ -93,6 +93,11 @@ function mutateStorage(operation) {
   storageQueue = run.then(() => {}, () => {});
   return run;
 }
+function cleanName(value) {
+  if (typeof value !== 'string') return undefined;
+  const name = value.replace(/[\u0000-\u001F\u007F]/g, ' ').trim().slice(0, 40);
+  return name || undefined;
+}
 function validConnections(value) {
   const list = Array.isArray(value) ? value : [];
   const seen = new Set();
@@ -100,7 +105,8 @@ function validConnections(value) {
   for (const item of list) {
     if (!item || !isPort(item.port) || !isToken(item.token) || seen.has(item.port)) continue;
     seen.add(item.port);
-    connections.push({ port: item.port, token: item.token });
+    const name = cleanName(item.name);
+    connections.push({ port: item.port, token: item.token, ...(name ? { name } : {}) });
   }
   return connections.sort((a, b) => a.port - b.port);
 }
@@ -193,6 +199,7 @@ function createClient(port) {
     connected: false,
     ready: undefined,
     version: null,
+    name: null,
     lastError: '',
     tasks: new Map(),
     drain: undefined,
@@ -204,16 +211,19 @@ function createClient(port) {
   };
 }
 
-async function saveToken(client, port, token) {
+async function saveToken(client, port, token, name) {
   return mutateStorage(async () => {
     if (!isCurrent(client)) return false;
     const stored = await readStored();
     const connections = validConnections(stored.connections);
     const existing = connections.find(item => item.port === port);
-    if (!existing && connections.length >= MAX_CONNECTIONS) throw new Error(`TOO_MANY_CONNECTIONS: forget a saved Harness before pairing a fifth (maximum ${MAX_CONNECTIONS})`);
+    if (!existing && connections.length >= MAX_CONNECTIONS) throw new Error(`TOO_MANY_CONNECTIONS: forget a saved Harness before pairing another (maximum ${MAX_CONNECTIONS})`);
     client.persist.wasSaved = Boolean(existing);
     if (!isCurrent(client)) return false;
-    const next = connections.filter(item => item.port !== port).concat({ port, token }).sort((a, b) => a.port - b.port);
+    const keptName = cleanName(name) ?? existing?.name;
+    const next = connections.filter(item => item.port !== port)
+      .concat({ port, token, ...(keptName ? { name: keptName } : {}) })
+      .sort((a, b) => a.port - b.port);
     await chrome.storage.local.set({ connections: next, enabled: true });
     await chrome.storage.local.remove('token');
     client.persist.wrote = true;
@@ -279,7 +289,7 @@ async function startClient(client, { code, restoreEpoch } = {}) {
   const saved = connections.find(item => item.port === port);
   if (!code && !saved) throw new Error(`No saved pairing for port ${port}. Enter the 8-digit code from Harness.`);
   if (!saved) {
-    if (connections.length + pairingInFlight.size >= MAX_CONNECTIONS) throw new Error(`TOO_MANY_CONNECTIONS: forget a saved Harness before pairing a fifth (maximum ${MAX_CONNECTIONS})`);
+    if (connections.length + pairingInFlight.size >= MAX_CONNECTIONS) throw new Error(`TOO_MANY_CONNECTIONS: forget a saved Harness before pairing another (maximum ${MAX_CONNECTIONS})`);
     pairingInFlight.add(port);
     client.pairingReserved = true;
   }
@@ -315,7 +325,8 @@ async function startClient(client, { code, restoreEpoch } = {}) {
           const message = JSON.parse(event.data);
           if (message.type === 'ready') {
             if (message.protocol !== 1 || !isToken(message.token)) throw new Error('Unsupported bridge protocol');
-            const persisted = await saveToken(client, port, message.token);
+            const name = cleanName(message.name);
+            const persisted = await saveToken(client, port, message.token, name);
             if (!persisted || !isCurrent(client, socket)) {
               fail(new Error(`COMMAND_CANCELED: connection to port ${port} was canceled`));
               return;
@@ -326,6 +337,7 @@ async function startClient(client, { code, restoreEpoch } = {}) {
             client.connected = true;
             client.persist.committed = true;
             client.version = chrome.runtime.getManifest().version;
+            client.name = name ?? client.name ?? null;
             client.lastError = '';
             portErrors.delete(port);
             lastError = '';
@@ -742,7 +754,7 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
       reconnecting: auto && !connected,
       connections: connections.map(item => {
         const client = clients.get(item.port);
-        return { port: item.port, connected: Boolean(client?.connected), version: client?.version ?? null, error: client?.lastError || portErrors.get(item.port) || '' };
+        return { port: item.port, name: client?.name ?? item.name ?? null, connected: Boolean(client?.connected), version: client?.version ?? null, error: client?.lastError || portErrors.get(item.port) || '' };
       }),
       enabled: auto,
       error: lastError,

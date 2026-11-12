@@ -13,9 +13,18 @@ label { display: block; margin-bottom: 7px; font-size: 12px; }
 .pair-row .field { flex: 1; min-width: 0; }
 .pair-row button { padding: 10px 13px; }
 #code { text-transform: uppercase; }
-#connections { margin: 0 0 14px; padding: 0; list-style: none; }
-#connections li { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 5px 0; }
-#connections .link { background: none; border: 0; color: #657083; padding: 2px 4px; font-size: 12px; text-decoration: underline; }
+#connections { margin: 0 0 14px; padding: 0; list-style: none; max-height: 300px; overflow-y: auto; display: grid; gap: 8px; }
+.conn { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 2px 8px; padding: 9px 11px; border: 1px solid #dce4ef; border-radius: 8px; background: #fbfcfe; }
+.conn.connected { border-color: #b7dccd; background: #f5fbf8; }
+.conn.error { border-color: #efc6cb; background: #fdf7f7; }
+.conn-info { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.conn-title { font-weight: 600; overflow-wrap: anywhere; }
+.conn-meta { display: inline-flex; align-items: center; gap: 6px; color: #657083; font-size: 12px; }
+.conn-actions { display: flex; gap: 2px; }
+.conn .link { background: none; border: 0; color: #657083; padding: 2px 4px; font-size: 12px; text-decoration: underline; }
+.conn-warn { width: 17px; height: 17px; padding: 0; border: 1.5px solid #c0392b; border-radius: 50%; background: #fff; color: #c0392b; font-size: 11px; font-weight: 700; line-height: 1; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
+.conn-warn:hover, .conn-warn:focus-visible { background: #c0392b; color: #fff; }
+.conn-error { grid-column: 1 / -1; margin: 6px 0 0; color: #a22331; font-size: 12px; overflow-wrap: anywhere; }
 input { min-width: 0; width: 100%; border: 1px solid #9caec6; padding: 10px; font: inherit; border-radius: 6px; letter-spacing: 2px; }
 button { font: inherit; font-weight: 600; background: #185adb; color: white; border: 1px solid transparent; border-radius: 6px; padding: 10px 15px; cursor: pointer; white-space: nowrap; }
 button:disabled { opacity: .45; cursor: default; }

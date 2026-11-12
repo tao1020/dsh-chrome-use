@@ -50,17 +50,19 @@ dsh plugin --profile desktop add dsh-chrome-use
 
 ### 4. 多个 Harness 同时连接（可选）
 
-不设置 `DSH_CHROME_USE_PORT` 时，插件自动选择端口：先试上次成功的端口（`~/.dsh/dsh-chrome-use/port.json`），再试 18791、18793..18799，跳过 18792。第一个可用端口生效，端口被占用不会让启动直接失败。设置页会显示实际端口。
+不设置 `DSH_CHROME_USE_PORT` 时，插件自动选择端口：先试上次成功的端口（`~/.dsh/dsh-chrome-use/port.json`），再试 18791、18793..18801，跳过 18792。第一个可用端口生效，端口被占用不会让启动直接失败。设置页会显示实际端口。
 
 设置 `DSH_CHROME_USE_PORT` 时严格使用该端口；端口被占用就报 `BRIDGE_START_FAILED`，不会自动换端口。脚本和测试建议显式设置。
 
 ```sh
-DSH_CHROME_USE_PORT=18793 dsh
+DSH_CHROME_USE_PORT=18793 DSH_CHROME_USE_NAME=Codex dsh
 ```
+
+`DSH_CHROME_USE_NAME` 是可选的显示名：设置后扩展弹窗会把该端口显示成「Codex · 18793」，方便区分是哪个 Harness；不设置就只显示端口。名字只用于显示，不参与路由，也不会发给其他 Harness。
 
 桌面版从图形界面启动时，可能读不到 shell 的环境变量。需要按桌面版的方式设置环境变量，或者从终端启动。
 
-配对第二个 Harness 时，把新的 `pairingCode` 粘贴到扩展弹窗即可；它已经包含实际端口。扩展会分别保存每个端口的配对令牌，最多保存 4 个。如果实际端口发生变化，旧令牌会失效，需要用新的配对码重新配对。纯数字旧版兼容码仍只用于 18791。
+配对第二个 Harness 时，把新的 `pairingCode` 粘贴到扩展弹窗即可；它已经包含实际端口。扩展会分别保存每个端口的配对令牌，最多保存 10 个。如果实际端口发生变化，旧令牌会失效，需要用新的配对码重新配对。纯数字旧版兼容码仍只用于 18791。
 
 端口 18792 留给 `scripts/fixture.mjs` 测试页。自动选择会跳过它。
 

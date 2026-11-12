@@ -109,6 +109,17 @@ test('encoded and legacy forms share the five-attempt budget', async t => {
   assert.match(correct.response.error, /AUTH_FAILED/);
 });
 
+test('the configured harness name travels in the ready message and is cleaned', async t => {
+  const bridge = await fixture(t, { name: ' Codex\u001b ' });
+  const { ws, response } = await pair(bridge);
+  assert.equal(response.name, 'Codex');
+  ws.close();
+  const unnamed = await fixture(t);
+  const other = await pair(unnamed);
+  assert.equal(other.response.name, undefined);
+  other.ws.close();
+});
+
 test('binds loopback and rejects ordinary website origins and HTTP access', async t => {
   const bridge = await fixture(t);
   assert.equal(bridge.http.address().address, '127.0.0.1');

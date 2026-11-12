@@ -23,8 +23,8 @@ async function occupy(t, port = 0) {
   return server.address().port;
 }
 
-test('candidate order prefers the saved port, then 18791 and 18793..18799, skipping 18792', () => {
-  assert.deepEqual(candidatePorts(), [18791, 18793, 18794, 18795, 18796, 18797, 18798, 18799]);
+test('candidate order prefers the saved port, then 18791 and 18793..18801, skipping 18792', () => {
+  assert.deepEqual(candidatePorts(), [18791, 18793, 18794, 18795, 18796, 18797, 18798, 18799, 18800, 18801]);
   assert.deepEqual(candidatePorts(18795).slice(0, 3), [18795, 18791, 18793]);
   assert.equal(candidatePorts(18792).includes(18792), false);
   assert.equal(new Set(candidatePorts()).size, candidatePorts().length);
@@ -106,6 +106,9 @@ test('explicit port options stay strict and do not select a preferred fallback',
   assert.deepEqual(bridgeOptions({ DSH_CHROME_USE_PORT: '18793' }, '/base'), { port: 18793, baseStateDir: '/base' });
   assert.deepEqual(bridgeOptions({ DSH_CHROME_USE_PORT: '  ' }, '/base'), { auto: true, baseStateDir: '/base' });
   assert.throws(() => bridgeOptions({ DSH_CHROME_USE_PORT: '0' }, '/base'), /INVALID_PORT/);
+  assert.deepEqual(bridgeOptions({ DSH_CHROME_USE_NAME: ' Codex ' }, '/base'), { auto: true, baseStateDir: '/base', name: 'Codex' });
+  assert.deepEqual(bridgeOptions({ DSH_CHROME_USE_NAME: '   ' }, '/base'), { auto: true, baseStateDir: '/base' });
+  assert.deepEqual(bridgeOptions({ DSH_CHROME_USE_PORT: '18793', DSH_CHROME_USE_NAME: 'x'.repeat(50) }, '/base'), { port: 18793, baseStateDir: '/base', name: 'x'.repeat(40) });
 });
 
 test('auto mode tries the remembered port before the default sequence', async t => {
