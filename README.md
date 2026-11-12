@@ -2,6 +2,8 @@
 
 让 DeepSeek Harness 读取、操作和调试本机 Google Chrome。
 
+同一个扩展和数据通道也能给 Codex、OpenCode、Workbody 等其他 Harness 使用：本包面向 DeepSeek Harness，其他 Harness 通过独立 JSON 运行器接入同一个 bridge，权限、端口和标签页规则完全一样。
+
 ## 安装
 
 > **先装 Harness 插件，再装 Chrome 扩展，最后配对。** 插件有三种装法，选一种，命令直接复制。
@@ -72,113 +74,92 @@ DSH_CHROME_USE_PORT=18793 DSH_CHROME_USE_NAME=Codex dsh
 
 多个 Harness 之间还可以在后台互相留言：`chrome_send_message` 广播或按端口定向发送，`chrome_messages` 读取，对方会在下一次工具调用的结果里看到未读提示。这是异步留言板，不会打断正在执行的操作，也不会显示在扩展弹窗里。细节和限制见 [Harness 之间的留言板](docs/agent-messaging.md)。
 
-### 5. Codex、OpenCode 和其他 Harness
+### 5. Codex、OpenCode、Workbody 和其他 Harness
 
 本包是 DSH/Cordis 插件。`package.json` 没有 MCP 入口，也没有命令行入口；把 npm 包装进 Codex 或 OpenCode，不会自动出现 `chrome_*` 工具。
 
-需要手工联调时，可以用独立 JSON 运行器启动同一个 bridge。它不注册 MCP 工具，只按行读取 JSON。具体步骤见 [独立 JSON 运行器](docs/standalone-runner.md)。
+不过扩展本身不挑 Harness：任何能连上 bridge 的客户端，都能操作同一个 Chrome。Codex、OpenCode、Workbody 这类 Harness 用独立 JSON 运行器启动同一个 bridge 即可，配对、端口、标签页租约和留言规则都和 DeepSeek Harness 一样，多个 Harness 还能同时连。具体步骤见 [独立 JSON 运行器](docs/standalone-runner.md)。
 
-## 能做什么
+---
 
-连接后，AI 可以选择所有普通 HTTP(S) 标签页，无需逐页点击授权。支持读取页面结构，或把正文读成纯文本/近似 Markdown；按名称和角色查找元素；点击（含双击和右键）、填写输入框和 contenteditable 区域、按键和组合键、悬停、拖拽、下拉选择、单文件或多文件上传（包括页面动态创建、没挂到 DOM 上的文件输入框）、等待页面状态、网络空闲或自定义条件、页面导出 PDF、处理 alert/confirm/prompt、滚动和滚动到元素、刷新/后退/前进、激活标签页、视口/整页/元素截图（可选把图片直接返回给模型）、导航，查看带游标的控制台日志、JavaScript 错误和网络请求，按需读取某条响应体，以及查看 Chrome 下载记录。
+# dsh-chrome-use
 
-插件安装后会自动注册同名技能 `dsh-chrome-use`。AI 需要操作 Chrome 时会按需加载它，按里面的连接、操作和收尾流程执行；也可以在对话里输入 `/dsh-chrome-use` 主动加载。不需要另外安装 skill 文件，也不需要手动改系统提示词。
+Let DeepSeek Harness read, operate and debug the Google Chrome on your machine.
 
-扩展使用 Chrome 的 `debugger` 接口。调试时，Chrome 会显示调试提示条；点击时，页面短暂显示蓝色箭头。页面定位使用浏览器的无障碍树和 DOM，点击、输入通过浏览器输入事件执行。扩展弹窗里有一个「前台模式」开关，决定点击、输入时怎么处理窗口：
+The same extension and data channel also work for Codex, OpenCode, Workbody and other harnesses: this package targets DeepSeek Harness, and other harnesses attach to the same bridge through the standalone JSON runner, with identical permissions, ports and tab rules.
 
-- **开（默认）**：操作前把浏览器窗口抬到最前面，页面一定能收到输入，但会抢走你当前正在用的应用的焦点。
-- **关（后台静默）**：只在 Chrome 自己的窗口里把目标标签页切为当前标签页，不抢焦点，在别的软件里打字不会被打断；代价是窗口被最小化或完全遮挡时操作会返回 `PAGE_HIDDEN`，不会偷偷弹窗。
+## Install
 
-同一个标签页只能由一个 Harness 会话占用。AI 用 `chrome_claim` 和 `chrome_release` 管理占用，不需要你手动分配。占用申请按先来后到排队，最多等 10 秒；原会话释放后，下一个会话才能接手，不会强行抢占。任务结束后应及时释放。
+> **Install the Harness plugin first, then the Chrome extension, then pair them.** The plugin can be installed in three ways; pick one and copy the command.
 
-不同标签页的读取、等待等操作可以并行。点击、输入、拖拽等会切换当前标签页的操作共用一把锁，自动排队，避免两条命令在同一个窗口里互相切页；排队时间计入命令超时。关掉「前台模式」后，这些操作不改变窗口焦点；`chrome_activate` 在任何模式下都会把浏览器窗口抬到最前。同一标签页同时只执行一条命令，重叠调用返回 `TAB_BUSY`。`chrome_close` 真正关闭页面；`chrome_release` 只解除占用，保留页面。
+### 1. Install the Harness plugin
 
-`chrome_open` 必须带一个组名（`group`，1-40 个字符），新建的标签页会立刻放进同名 Chrome 标签页组：同一系列任务的多个标签页复用同一个组名，扩展会在同一窗口里找同名组并加入，找不到就建组；组的颜色由组名稳定生成，所以同一系列总是同色。分组失败（例如固定标签页）不会影响打开动作，结果里会带 `groupError`。
+Pick any of the three ways below; the commands are ready to copy.
 
-## 页面动态创建的上传框
+**Let your agent do it (recommended)**: send this sentence to the agent you are using:
 
-有些页面不把 `<input type="file">` 放进 DOM，而是临时创建后直接 `click()` 打开系统选择框。这种元素拿不到 ref，用下面两步：
-
-```js
-chrome_click({ tabId, ref: "上传按钮的 ref", chooser: true })
-chrome_upload({ tabId, chooser: true, paths: ["/Users/tao/Downloads/a.diag"] })
+```text
+Please install the DSH plugin dsh-chrome-use from https://github.com/tao1020/dsh-chrome-use
 ```
 
-第一步会在点击前拦截文件选择框，结果里带 `chooserMode`；第二步把文件注入被拦截的选择框，页面照常收到 `change` 事件。两步要在 30 秒内完成，没人消费会自动取消；只想关掉选择框用 `cancel: true`。页面自己的 `change` 处理报错时，用 `chrome_logs` 看 JavaScript 异常。
-
-## 更新
-
-Chrome 扩展由 Chrome 应用商店自动更新，也可以在 `chrome://extensions` 点击扩展卡片的“更新”手动检查。Harness 插件在插件管理里更新。每个版本的改动见 [更新日志](CHANGELOG.md)。
-
-两边分别更新，版本不必完全一致；设置页的“检查更新”只查询 GitHub 最新正式版本，不会自动下载。已连接的扩展版本显示在设置页的“连接状态”。
-
-## 反馈问题
-
-工具意外失败时，AI 会先说明失败原因，再问你要不要给插件提一个 issue。你同意后，它用 `chrome_report` 生成一个预填的 GitHub issue 链接：
-
-- 只包含工具名、错误信息和版本（插件、扩展、系统），不包含页面内容、截图、Cookie 或登录信息。
-- 链接里的网址会去掉查询参数，提交前你还能再检查一遍。
-- 提交动作由你在 GitHub 页面上完成，插件不会自动提交。
-
-## 测试与开发
+**GitHub repository (always the latest)**
 
 ```sh
-npm ci --ignore-scripts
-npm run check
-npm test
-node scripts/fixture.mjs
+dsh plugin --profile desktop add github:tao1020/dsh-chrome-use
 ```
 
-最后一个命令启动专用测试页：`http://127.0.0.1:18792/`。保持服务运行，把 [验收提示词](docs/harness-test-prompt.md) 交给 Harness。使用 `dsh --profile headless --json` 可记录工具调用和最终结论。模型、API Key 和插件必须配置在测试使用的 profile 中。
-
-无需模型时，可以运行 `npm run dev`，按行输入 JSON，例如 `{"action":"status"}`。首次连接用 `{"action":"pair"}` 生成配对码。未设置 `DSH_CHROME_USE_PORT` 时它和插件一样自动选择端口；设置时严格使用该端口。配对信息按实际端口保存在 `~/.dsh/dsh-chrome-use/` 或 `~/.dsh/dsh-chrome-use/port-<端口>/`。调试服务和 Harness 不要同时占用同一个端口。
-
-开发扩展时不用装商店版：在 `chrome://extensions` 开启“开发者模式”，点击“加载已解压的扩展程序”，选择本仓库的 `extension/` 目录；改完代码在该页点击刷新。
-
-本仓库的自动化测试覆盖配对、会话占用、超时、取消、断线、页面限制、过期元素引用和输入行为。真实 Chrome 验收需要单独运行，单元测试通过不代表浏览器验收通过。
-
-## 排查连接问题
-
-- `BRIDGE_START_FAILED`：显式指定的端口被占用，或自动选择的候选端口全部被占用。先停止重复服务，或用 `DSH_CHROME_USE_PORT` 指定一个空闲端口。
-- `AUTH_FAILED`：在 Harness 设置页的 dsh-chrome-use 里点“生成配对码”（或让 AI 调用 `chrome_pair`），再到扩展弹窗连接。实际端口变化后旧令牌会失效，需要用新的 `pairingCode` 重新配对。
-- `TAB_IN_USE`：等待 10 秒后，其他 Harness 会话仍占用该页。让原会话释放，或新建自己的标签页。
-- `TAB_BUSY`：这个标签页还有一条命令在运行。等它结束再操作同一页，或改用其他标签页；不同标签页可以直接并行。
-- `TAB_OWNED_BY_ANOTHER_HARNESS`：另一个 Harness 已占用这个标签页。让它在自己的会话里调用 `chrome_release`，或者换一个标签页。这个错误不会跨 Harness 排队。
-- `TAB_NOT_OWNED`：这个标签页不在当前 Harness 的占用表里——从没 `chrome_claim`，或者已经 `chrome_release`。先 claim 再操作。消息可能带诊断后缀 `(Chrome detached this tab <n>s ago: <reason>)`，说明 Chrome 之前主动解除了调试，例如 `target_closed`、`replaced_with_devtools`。
-- `TAB_NOT_LEASED`：Harness 以为还占着这个标签页，但扩展侧的租约已经丢失（常见于重载扩展后旧连接残留）。先用 `chrome_tabs` 确认页面还在，再重新 `chrome_claim`。它和 `TAB_NOT_OWNED` 都表示“还没有占用、需要先 claim”，只是检查层级不同。
-- `TAB_LEASE_QUARANTINED`：Chrome 没能完成上一次调试清理。重载扩展后再试；在重载前不要继续操作这个标签页。
-- `TAB_LEASE_CLOSING`：这个标签页正在被另一个 Harness 断开或清理。等清理完成后再试；不要循环重试。
-- Chrome 调试器冲突：关闭该页的 DevTools 或释放其他浏览器工具的会话，再检查连接。不要同时用 Codex 和 Harness 操作同一页。
-- 操作超时或取消：请求停止这一条命令，等扩展确认清理完成后才释放操作锁，不会自动重放。其他标签页通常不受影响；若清理超过 8 秒仍未确认，会断开连接，避免旧操作影响新会话。取消打开页面时若收到迟到的成功结果，也会断开，以清理无人占用的调试连接；新页面可能保留。旧版扩展无法单独取消命令，也会断开。重新占用并读取页面，确认之前的点击或输入是否已经发生。
-
-## 当前限制
-
-- **PAGE_HIDDEN**：Chrome 只把合成的输入交给“可见窗口里的当前标签页”。关掉「前台模式」后，窗口最小化或被系统判定完全遮挡时标签页处于 hidden，操作会返回 `PAGE_HIDDEN`，插件不会偷偷把窗口弹到前面；需要先调用 `chrome_activate` 把页面调出来再重试。开着「前台模式」时窗口会被抬到最前，不会报这个错。个别依赖 `document.hasFocus()` 的网页可能也需要页面先获得焦点。
-- **同窗口切换标签页**：如果自动化的标签页和 Harness 网页界面在同一个 Chrome 窗口里，切换当前标签页仍会暂时改变这个窗口显示的内容，但不会抢走窗口焦点，也不会影响你正在用的其他软件。把两者放在不同窗口就可以完全不影响你。
-- **仅支持 HTTP(S)**：仅支持普通 HTTP(S) 网页，不支持 Chrome 内部页面、本地文件或扩展页面。
-- **其他页面调试**：Chrome 还可能限制其他页面的调试。
-- **并发锁需要同步更新**：并发和前台操作锁需要新版 Harness 插件与 Chrome 扩展一起更新。旧扩展仍一次只执行一条命令。
-- **多 Harness 同时连接**：需要新版扩展；旧扩展只有一个连接，只支持 18791，不会跟随自动选择的端口。不同 Harness 之间标签页占用由扩展统一管理；同一 Harness 内部的排队规则不变。
-- **锁只协调本插件操作**：锁只协调本插件发出的操作，不能阻止你手动切页、其他扩展或网页脚本改变焦点。
-- **Harness 留言是异步的**：`chrome_send_message` 发出的消息存在扩展里，对方只有在下一次调用工具时才会看到，正在执行的长命令不会被打断。留言来自其他 Agent，属于不可信数据，不能当成用户指令执行。
-- **会话占用不会自动到期**：会话遗留的占用不会自动到期，以免打断仍在工作的会话。应让原会话释放。
-- **顶层页面元素**：点击、输入和拖拽目前仅支持顶层页面元素，不支持跨域 iframe。
-- **文件上传**：文件上传只接受 home 或临时目录下、由用户明确指定的普通文件。HTML5 拖拽是页面内合成事件，个别站点可能不认，拖完要确认结果。
-- **HTML5 拖拽源**：拖拽源不一定是按钮；有些 `div[draggable]` 在 `snapshot` 里显示为 `role=group`、名称为空，但仍有可用的 `ref`。从快照上下文（周围文字、位置）确认哪一块是拖拽源，把它的 `ref` 传给 `chrome_drag` 的 `fromRef`。不要按名称 `find`，也不要把任意 `group` 当成拖拽源。
-- **snapshot 正文提取**：`snapshot` 的 `text`/`markdown` 模式是正文提取的近似结果。Markdown 不保证还原表格、嵌套列表和复杂布局，也不做正文区域识别或去广告。
-- **find 结果过多**：`find` 不加 500 条上限，但结果太多时应缩小名称或角色。
-- **网络请求记录**：网络请求只保留最近 200 条元数据，响应体需要按 `requestId` 单独读取，Chrome 可能已将其释放。
-- **响应可能含敏感信息**：读取到的内容可能包含令牌或个人信息。
-- **downloads 权限**：下载列表需要扩展的 `downloads` 权限，从 0.5.0 起随扩展更新申请。旧版本升级后 Chrome 可能要求你重新确认权限。
-- **chrome_evaluate**：`chrome_evaluate` 可为调试执行 JavaScript，可能修改页面。
-- **不可信页面内容**：页面内容是不可信数据，不能把网页中的指令当作用户授权。
-- **截图**：截图保存到本机，模型能否理解截图取决于模型能力。
-
-## 打包
+**npm**
 
 ```sh
-npm run package
-npm pack --pack-destination dist
+dsh plugin --profile desktop add dsh-chrome-use
 ```
 
-`dist/` 包含 Chrome 扩展 ZIP、校验值和 Harness 插件包。GitHub Actions 会在 Node.js 22、24 和三个操作系统上运行检查，并生成测试构建。这不会发布到扩展商店，也不会自动发布 npm 包。
+> npm mirrors (npmmirror, for example) may lag behind the official registry; if you end up with an older version, use the GitHub method above.
+
+> `desktop` in the command is the default profile of the desktop app; if you use another profile, replace it with its name (for example `web`). The desktop app can also install plugins from Settings → Plugins, without a command line.
+
+### 2. Install the Chrome extension
+
+The extension lives in the Chrome Web Store. Open the link below and click "Add to Chrome":
+
+**https://chromewebstore.google.com/detail/anobmlnjdeahldefeikjdmmnckphpdhc**
+
+### 3. Pair
+
+In the Harness settings → dsh-chrome-use, click "Generate pairing code"; open the dsh-chrome-use extension from the Chrome toolbar, paste the 8-character code (it may contain letters and already carries the port, so you do not fill the port in), and click "Connect". You can also just say in the chat: "please connect the browser with chrome_pair."
+
+Requires Google Chrome 120 or newer and DeepSeek Harness 0.2.1-rc.2 or newer. Development and tests use Node.js 22 or 24.
+
+After a successful pairing, restarting the Harness, restarting Chrome, or an extension auto-update reconnects automatically. "Disconnect all" stops automatic reconnecting; next time leave the pairing code empty and click "Connect". Clearing the pairing data requires pairing again.
+
+**Connecting lets the Harness operate every normal web page in this Chrome, including sites you are logged in to.** Page content, screenshots and debugging information may be sent to the model service configured in your Harness. See [Privacy](PRIVACY.md).
+
+### 4. Several harnesses at once (optional)
+
+When `DSH_CHROME_USE_PORT` is not set, the plugin picks a port automatically: it first tries the last successful port (`~/.dsh/dsh-chrome-use/port.json`), then 18791 and 18793..18801, skipping 18792. The first free port wins, so a busy port no longer makes startup fail. The settings page shows the actual port.
+
+When `DSH_CHROME_USE_PORT` is set, that port is used strictly; if it is busy the plugin reports `BRIDGE_START_FAILED` instead of moving to another port. Scripts and tests should set it explicitly.
+
+```sh
+DSH_CHROME_USE_PORT=18793 DSH_CHROME_USE_NAME=Codex dsh
+```
+
+`DSH_CHROME_USE_NAME` is an optional display name: the extension popup then shows that port as "Codex · 18793", which makes harnesses easy to tell apart; without it, only the port is shown. The name is display-only, plays no part in routing, and is not shared with other harnesses.
+
+When the desktop app is started from the GUI it may not see shell environment variables. Set them the way the desktop app expects, or start it from a terminal.
+
+To pair a second Harness, paste its new `pairingCode` into the extension popup; the code already carries the actual port. The extension stores a separate token for each port, up to 10 of them. If the actual port changes, the old token stops working and you need to pair again with a new code. The old numeric compatibility code still only works on port 18791.
+
+Port 18792 is reserved for the `scripts/fixture.mjs` test page; automatic selection skips it.
+
+Automatic mode shares one `port.json`. When running several harnesses, set `DSH_CHROME_USE_PORT` explicitly for each; otherwise the port a harness gets can depend on startup order, which invalidates the old token and forces a new pairing.
+
+Several harnesses can work on different tabs at the same time; a tab still belongs to only one harness. When another harness got there first you get `TAB_OWNED_BY_ANOTHER_HARNESS`, and there is no queueing. Existing single-harness setups need no configuration change.
+
+Harnesses can also leave each other messages in the background: `chrome_send_message` broadcasts or targets a specific port, `chrome_messages` reads them, and the receiver sees an unread hint in the result of its next tool call. This is an asynchronous message board: it does not interrupt a running operation and is not shown in the extension popup. Details and limits: [Messages between harnesses](docs/agent-messaging.md).
+
+### 5. Codex, OpenCode, Workbody and other harnesses
+
+This package is a DSH/Cordis plugin. `package.json` has no MCP entry point and no command-line entry point; dropping the npm package into Codex or OpenCode will not make `chrome_*` tools appear.
+
+The extension itself does not care which harness is on the other end: any client that can reach the bridge can drive the same Chrome. Harnesses such as Codex, OpenCode and Workbody start the same bridge with the standalone JSON runner, and get the same pairing, ports, tab leases and messaging rules as DeepSeek Harness; several harnesses can stay connected at once. See [Standalone JSON runner](docs/standalone-runner.md).

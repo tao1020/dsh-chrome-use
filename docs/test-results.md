@@ -4,7 +4,7 @@
 
 2026-10-28，在 macOS、真实 Google Chrome 和 Harness 0.2.1-rc.3 上测试。测试模型为 OpenCode Go 提供的 `deepseek-v4.1-flash`。通过 Harness 的 headless 命令行启动独立会话，保留工具调用记录和最终报告。
 
-浏览器验收针对扩展 0.1.1，只操作本机专用测试页。Codex 没有同时控制这些页面。首次测试发现后台标签页收不到鼠标事件；增加 `Page.bringToFront` 后重新验收通过。（0.6.3 起默认仍是前台模式，并在扩展弹窗里增加开关：关掉后不再调用 `Page.bringToFront`，改成只在 Chrome 窗口内切换当前标签页，避免抢走窗口焦点；窗口最小化时返回 `PAGE_HIDDEN`。见 README“当前限制”。）
+浏览器验收针对扩展 0.1.1，只操作本机专用测试页。Codex 没有同时控制这些页面。首次测试发现后台标签页收不到鼠标事件；增加 `Page.bringToFront` 后重新验收通过。（0.6.3 起默认仍是前台模式，并在扩展弹窗里增加开关：关掉后不再调用 `Page.bringToFront`，改成只在 Chrome 窗口内切换当前标签页，避免抢走窗口焦点；窗口最小化时返回 `PAGE_HIDDEN`。开关位置见扩展弹窗的「运行模式」。）
 
 ## 真实浏览器结果
 
