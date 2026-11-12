@@ -152,12 +152,12 @@ export class Bridge {
     if (this.peer) throw new Error('ALREADY_CONNECTED: disconnect in the extension before pairing again');
     const code = String(randomInt(10000000, 100000000));
     const pairingCode = generatePairingCode(this.port, () => randomInt(0, 0x1000000));
-    this.pairing = { code, pairingCode, expires: Date.now() + 120000, attempts: 0 };
+    this.pairing = { code, pairingCode, expires: Date.now() + 600000, attempts: 0 };
     return {
       code,
       pairingCode,
       port: this.port,
-      expiresInSeconds: 120,
+      expiresInSeconds: 600,
       instructions: `Open dsh-chrome-use in the Chrome toolbar and enter the 8-character pairing code for port ${this.port}. New extensions read the port from the code; older extensions use the 8-digit compatibility code only on port 18791. Connecting permits access to all normal tabs in this Chrome. Do not enter the code into a website or post it publicly.`,
     };
   }

@@ -12,6 +12,7 @@
         <input id="code" aria-label="配对码" inputmode="text" autocapitalize="characters" autocomplete="off" spellcheck="false" maxlength="8" placeholder="粘贴 8 位配对码">
         <button type="submit">连接</button>
       </div>
+      <p id="error" role="alert"></p>
     </form>
     <section>
       <p class="help">连接后，AI 自动选择网页，无需逐页授权。点击“断开全部连接”可以停止全部操作。</p>
@@ -24,7 +25,6 @@
       <p class="help" id="foreground-off">关：只在浏览器窗口内切换标签页，不抢焦点；窗口被最小化或完全遮挡时，操作会返回 PAGE_HIDDEN。改完立即生效，不用重新连接。</p>
     </section>
     <button id="disconnect" class="secondary">断开全部连接</button>
-    <p id="error" role="alert"></p>
   </main>
   <footer>
     <p class="star"><a href="https://github.com/tao1020/dsh-chrome-use" target="_blank" rel="noreferrer">喜欢这个插件？点个 Star，让更多人发现它 ⭐</a></p>
