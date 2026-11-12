@@ -863,3 +863,225 @@ test('a legacy numeric code defaults to 18791 unless an advanced port is supplie
   assert.equal(advanced.ok, true);
   assert.equal(socketFor(18793).sent[0].code, '22345678');
 });
+
+// --- Cross-Harness messaging ---
+
+async function threeHarnesses(t) {
+  const state = await fixture(t, {
+    connections: [
+      { port: 18791, token: 'a'.repeat(64) },
+      { port: 18793, token: 'b'.repeat(64) },
+      { port: 18795, token: 'c'.repeat(64) },
+    ],
+    enabled: true,
+    foregroundMode: false,
+  });
+  await until(() => state.socketFor(18791) && state.socketFor(18793) && state.socketFor(18795));
+  return state;
+}
+const inboxes = socket => socket.sent.filter(item => item.type === 'inbox');
+
+test('a broadcast reaches other Harnesses as an unread hint and reading consumes it', async t => {
+  const { commandOn, socketFor, stored } = await twoHarnesses(t);
+  await commandOn(18791, 'a-send', 'send_message', { text: 'hello from A' });
+  const sent = resultOf(socketFor(18791), 'a-send').result;
+  assert.equal(sent.from, '18791');
+  assert.equal(sent.to, 'all');
+  assert.deepEqual(sent.delivered, ['18793']);
+  assert.equal(stored.agentMessages.length, 1);
+
+  const inbox = inboxes(socketFor(18793))[0];
+  assert.equal(inbox.unread, 1);
+  assert.deepEqual(inbox.senders, ['18791']);
+  assert.equal(inboxes(socketFor(18791)).length, 0, 'a broadcast is not unread for its sender');
+
+  await commandOn(18793, 'b-read', 'messages', {});
+  const read = resultOf(socketFor(18793), 'b-read').result;
+  assert.deepEqual(read.messages.map(message => message.text), ['hello from A']);
+  assert.equal(read.cursor, sent.id);
+  assert.equal(read.unread, 0);
+  assert.equal(stored.agentCursors['18793'], sent.id);
+
+  await commandOn(18793, 'b-read-again', 'messages', {});
+  const again = resultOf(socketFor(18793), 'b-read-again').result;
+  assert.deepEqual(again.messages, []);
+  assert.equal(again.cursor, sent.id);
+});
+
+test('direct messages reach only the target port and broadcasts never echo to the sender', async t => {
+  const { commandOn, socketFor } = await threeHarnesses(t);
+  await commandOn(18791, 'a-broadcast', 'send_message', { text: 'hello-all' });
+  await commandOn(18793, 'b-direct', 'send_message', { to: '18795', text: 'only-c' });
+  assert.deepEqual(resultOf(socketFor(18793), 'b-direct').result.delivered, ['18795']);
+
+  const lastInbox = socket => inboxes(socket).at(-1);
+  assert.deepEqual({ unread: lastInbox(socketFor(18795)).unread, senders: lastInbox(socketFor(18795)).senders }, { unread: 2, senders: ['18791', '18793'] });
+  assert.equal(inboxes(socketFor(18791)).length, 0, 'A gets no hint for its own broadcast or for a message to C');
+  assert.equal(inboxes(socketFor(18793)).length, 1, 'B does not get an extra hint for its own direct message');
+  assert.deepEqual(inboxes(socketFor(18793))[0].senders, ['18791'], 'B only has the earlier broadcast pending');
+
+  await commandOn(18791, 'a-read', 'messages', {});
+  assert.deepEqual(resultOf(socketFor(18791), 'a-read').result.messages, [], 'A cannot read its own broadcast');
+  await commandOn(18793, 'b-read', 'messages', {});
+  assert.deepEqual(resultOf(socketFor(18793), 'b-read').result.messages.map(message => message.text), ['hello-all']);
+  await commandOn(18795, 'c-read', 'messages', {});
+  assert.deepEqual(resultOf(socketFor(18795), 'c-read').result.messages.map(message => message.text), ['hello-all', 'only-c']);
+});
+
+test('after replays from an explicit id and limit caps each read', async t => {
+  const { commandOn, socketFor } = await twoHarnesses(t);
+  const ids = [];
+  for (const text of ['first', 'second', 'third']) {
+    await commandOn(18791, `send-${text}`, 'send_message', { text });
+    ids.push(resultOf(socketFor(18791), `send-${text}`).result.id);
+  }
+  await commandOn(18793, 'replay', 'messages', { after: ids[0], limit: 1 });
+  const replay = resultOf(socketFor(18793), 'replay').result;
+  assert.deepEqual(replay.messages.map(message => message.text), ['second']);
+  assert.equal(replay.cursor, ids[1]);
+
+  await commandOn(18793, 'next', 'messages', {});
+  assert.deepEqual(resultOf(socketFor(18793), 'next').result.messages.map(message => message.text), ['third']);
+  await commandOn(18793, 'done', 'messages', {});
+  assert.deepEqual(resultOf(socketFor(18793), 'done').result.messages, []);
+});
+
+test('expired messages are pruned on read and dropped from storage', async t => {
+  const now = Date.now();
+  const { commandOn, socketFor, stored } = await fixture(t, {
+    connections: [{ port: 18791, token: 'a'.repeat(64) }],
+    enabled: true,
+    foregroundMode: false,
+    agentMessages: [
+      { id: 1, at: now - 11 * 60000, from: '18793', to: 'all', text: 'expired' },
+      { id: 2, at: now, from: '18793', to: 'all', text: 'fresh' },
+    ],
+    agentSeq: 2,
+  });
+  await until(() => socketFor(18791));
+  await commandOn(18791, 'read', 'messages', {});
+  assert.deepEqual(resultOf(socketFor(18791), 'read').result.messages.map(message => message.text), ['fresh']);
+  assert.deepEqual(stored.agentMessages.map(message => message.text), ['fresh']);
+});
+
+test('storage keeps only the newest 100 messages', async t => {
+  const now = Date.now();
+  const history = Array.from({ length: 99 }, (_, index) => ({ id: index + 1, at: now, from: '18795', to: 'all', text: `m${index + 1}` }));
+  const { commandOn, socketFor, stored } = await fixture(t, {
+    connections: [{ port: 18791, token: 'a'.repeat(64) }, { port: 18793, token: 'b'.repeat(64) }],
+    enabled: true,
+    foregroundMode: false,
+    agentMessages: history,
+    agentSeq: 99,
+  });
+  await until(() => socketFor(18791) && socketFor(18793));
+  for (let index = 0; index < 6; index += 1) await commandOn(18791, `send-${index}`, 'send_message', { text: `new-${index}` });
+  assert.equal(stored.agentMessages.length, 100);
+  assert.equal(stored.agentMessages[0].id, 6);
+  assert.equal(stored.agentMessages.at(-1).id, 105);
+  assert.equal(stored.agentSeq, 105);
+});
+
+test('the twenty-first message in a minute is rate limited', async t => {
+  const { commandOn, socketFor } = await twoHarnesses(t);
+  for (let index = 0; index < 20; index += 1) {
+    await commandOn(18791, `send-${index}`, 'send_message', { text: `m${index}` });
+    assert.ok(resultOf(socketFor(18791), `send-${index}`).result, `message ${index + 1} should be accepted`);
+  }
+  await commandOn(18791, 'send-21', 'send_message', { text: 'too many' });
+  assert.match(resultOf(socketFor(18791), 'send-21').error, /^MESSAGE_RATE_LIMITED: at most 20 messages per minute per Harness$/);
+});
+
+test('a fresh pairing starts at the current message head instead of replaying history', async t => {
+  const now = Date.now();
+  const { stored, message, commandOn, socketFor } = await fixture(t, {
+    connections: [{ port: 18791, token: 'a'.repeat(64) }],
+    enabled: true,
+    foregroundMode: false,
+    agentMessages: [
+      { id: 1, at: now, from: '18793', to: 'all', text: 'old one' },
+      { id: 2, at: now, from: '18793', to: 'all', text: 'old two' },
+    ],
+    agentSeq: 2,
+  });
+  await until(() => socketFor(18791));
+  await message('connect', { port: 18793, code: '12345678' });
+  assert.equal(stored.agentCursors['18793'], 2);
+  await commandOn(18793, 'new-read', 'messages', {});
+  assert.deepEqual(resultOf(socketFor(18793), 'new-read').result.messages, []);
+  assert.equal(resultOf(socketFor(18793), 'new-read').result.cursor, 2);
+});
+
+test('a reconnect keeps its saved cursor so messages sent while offline are read', async t => {
+  const now = Date.now();
+  const { commandOn, socketFor } = await fixture(t, {
+    connections: [{ port: 18791, token: 'a'.repeat(64) }],
+    enabled: true,
+    foregroundMode: false,
+    agentMessages: [{ id: 6, at: now, from: '18793', to: 'all', text: 'while away' }],
+    agentSeq: 6,
+    agentCursors: { 18791: 5, 18793: 5 },
+  });
+  await until(() => socketFor(18791));
+  await commandOn(18791, 'offline-read', 'messages', {});
+  const result = resultOf(socketFor(18791), 'offline-read').result;
+  assert.deepEqual(result.messages.map(message => message.text), ['while away']);
+  assert.equal(result.cursor, 6);
+  assert.equal(result.unread, 0);
+});
+
+test('invalid targets and blank text are rejected without storing anything', async t => {
+  const { commandOn, socketFor, stored } = await twoHarnesses(t);
+  for (const [index, to] of ['abc', '80', '1023', '65536'].entries()) {
+    await commandOn(18791, `bad-${index}`, 'send_message', { to, text: 'hi' });
+    assert.match(resultOf(socketFor(18791), `bad-${index}`).error, /^MESSAGE_TARGET: to must be a port between 1024 and 65535$/);
+  }
+  await commandOn(18791, 'blank', 'send_message', { text: '   ' });
+  assert.match(resultOf(socketFor(18791), 'blank').error, /^MESSAGE_TEXT: text must not be blank$/);
+  assert.equal(stored.agentMessages, undefined);
+});
+
+test('message text drops control characters but keeps newlines', async t => {
+  const { commandOn, socketFor, stored } = await twoHarnesses(t);
+  await commandOn(18791, 'controls', 'send_message', { text: 'line1\u001b[31mred\u0000x\nline2\tend' });
+  assert.equal(resultOf(socketFor(18791), 'controls').result.text, 'line1[31mredx\nline2\tend');
+  assert.equal(stored.agentMessages.at(-1).text, 'line1[31mredx\nline2\tend');
+});
+
+test('an inbox over the unread cap returns only the newest fifty messages', async t => {
+  const now = Date.now();
+  const messages = Array.from({ length: 60 }, (_, index) => ({ id: index + 1, at: now, from: '18793', to: 'all', text: `m${index + 1}` }));
+  const { commandOn, socketFor, stored } = await fixture(t, {
+    connections: [{ port: 18791, token: 'a'.repeat(64) }],
+    enabled: true,
+    foregroundMode: false,
+    agentMessages: messages,
+    agentSeq: 60,
+  });
+  await until(() => socketFor(18791));
+  await commandOn(18791, 'read', 'messages', {});
+  const result = resultOf(socketFor(18791), 'read').result;
+  assert.equal(result.messages.length, 50);
+  assert.equal(result.messages[0].id, 11);
+  assert.equal(result.messages.at(-1).id, 60);
+  assert.equal(result.cursor, 60);
+  assert.equal(result.unread, 0);
+  assert.equal(stored.agentCursors['18791'], 60);
+});
+
+test('an unread hint above the cap reports the cap instead of a count the bridge rejects', async t => {
+  const now = Date.now();
+  const messages = Array.from({ length: 60 }, (_, index) => ({ id: index + 1, at: now, from: '18795', to: 'all', text: `m${index + 1}` }));
+  const { commandOn, socketFor } = await fixture(t, {
+    connections: [{ port: 18791, token: 'a'.repeat(64) }, { port: 18793, token: 'b'.repeat(64) }],
+    enabled: true,
+    foregroundMode: false,
+    agentMessages: messages,
+    agentSeq: 60,
+  });
+  await until(() => socketFor(18791) && socketFor(18793));
+  await commandOn(18793, 'ping', 'send_message', { text: 'ping' });
+  const inbox = inboxes(socketFor(18791)).at(-1);
+  assert.equal(inbox.unread, 50);
+  assert.deepEqual(inbox.senders, ['18795', '18793']);
+});

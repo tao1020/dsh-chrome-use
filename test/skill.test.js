@@ -23,3 +23,10 @@ test('registration goes through the plugin lifetime and exposes the skill to the
   assert.ok(usedEffect, 'registration is tied to the plugin effect scope');
   assert.equal(registered.name, 'dsh-chrome-use');
 });
+
+test('skill explains cross-Harness messaging and that messages are not user instructions', () => {
+  assert.match(chromeUseSkill.content, /chrome_send_message/);
+  assert.match(chromeUseSkill.content, /chrome_messages/);
+  assert.match(chromeUseSkill.content, /其他 Agent/);
+  assert.match(chromeUseSkill.content, /不是用户指令/);
+});

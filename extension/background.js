@@ -1,6 +1,6 @@
 import { BrowserController } from './controller.js';
 import { TabLeases } from './leases.js';
-import { PORT, MAX_MESSAGE, PARALLEL_TABS, validateArgs } from './protocol.js';
+import { PORT, MAX_MESSAGE, PARALLEL_TABS, MESSAGE_UNREAD_MAX, validateArgs } from './protocol.js';
 import { classifyPairingCode } from './pairing-code.js';
 
 // One Chrome extension can drive several harnesses at once. Each connection
@@ -8,6 +8,14 @@ import { classifyPairingCode } from './pairing-code.js';
 // only shared authority is the lease table below: it decides which connection
 // may touch a tab. Bridge-local chat claims stay unchanged.
 const MAX_CONNECTIONS = 4;
+// Cross-Harness messages are stored here so a reconnect, or an MV3 worker
+// restart, does not lose them. They are data from other agents, never user
+// instructions; the bridge only surfaces a count until a tool reads the text.
+const MESSAGE_TTL_MS = 600000;
+const MESSAGE_LIMIT = 100;
+const MESSAGE_RATE_PER_MINUTE = 20;
+const MESSAGE_TARGET_ERROR = 'MESSAGE_TARGET: to must be a port between 1024 and 65535';
+const MESSAGE_STORAGE_KEYS = ['agentMessages', 'agentSeq', 'agentCursors'];
 const clients = new Map();
 const portErrors = new Map();
 const leases = new TabLeases();
@@ -100,6 +108,60 @@ async function readStored() {
   return chrome.storage.local.get(['connections', 'token', 'enabled']);
 }
 
+const isPortString = value => typeof value === 'string' && /^\d{4,5}$/.test(value) && isPort(Number(value));
+
+// Storage is shared with older extension versions and hand-edited profiles, so
+// every read is normalized before the queue or rate math touches it.
+function validMessages(value) {
+  const list = Array.isArray(value) ? value : [];
+  const messages = [];
+  for (const item of list) {
+    if (!item || !Number.isSafeInteger(item.id) || item.id < 1) continue;
+    if (!Number.isFinite(item.at)) continue;
+    if (!isPortString(item.from)) continue;
+    if (item.to !== 'all' && !isPortString(item.to)) continue;
+    if (typeof item.text !== 'string' || !item.text.length || item.text.length > 800) continue;
+    messages.push({ id: item.id, at: item.at, from: item.from, to: item.to, text: item.text });
+  }
+  return messages.sort((a, b) => a.id - b.id);
+}
+function validMessageCursors(value) {
+  const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  const cursors = {};
+  for (const [key, id] of Object.entries(source)) {
+    if (!isPortString(key) || !Number.isSafeInteger(id) || id < 0) continue;
+    cursors[key] = id;
+  }
+  return cursors;
+}
+function messageSeq(stored, messages) {
+  const last = messages.length ? messages[messages.length - 1].id : 0;
+  const saved = Number.isSafeInteger(stored.agentSeq) && stored.agentSeq > 0 ? stored.agentSeq : 0;
+  return Math.max(saved, last);
+}
+// Expired entries are dropped on every read and write, and the newest
+// MESSAGE_LIMIT entries win so a burst cannot grow storage without bound.
+function pruneMessages(messages, now) {
+  const fresh = messages.filter(message => now - message.at <= MESSAGE_TTL_MS);
+  return fresh.length > MESSAGE_LIMIT ? fresh.slice(-MESSAGE_LIMIT) : fresh;
+}
+function visibleMessages(port, messages, after) {
+  return messages.filter(message => message.id > after && message.from !== port && (message.to === 'all' || message.to === port));
+}
+function messageTarget(value) {
+  if (value === undefined) return 'all';
+  const text = typeof value === 'string' ? value.trim() : '';
+  if (!/^\d{4,5}$/.test(text) || !isPort(Number(text))) throw new Error(MESSAGE_TARGET_ERROR);
+  return String(Number(text));
+}
+function takeMessageSlot(client) {
+  const now = Date.now();
+  const times = (client.messageTimes ?? []).filter(time => now - time < 60000);
+  if (times.length >= MESSAGE_RATE_PER_MINUTE) throw new Error(`MESSAGE_RATE_LIMITED: at most ${MESSAGE_RATE_PER_MINUTE} messages per minute per Harness`);
+  times.push(now);
+  client.messageTimes = times;
+}
+
 // Before multi-port support the extension kept one `token` for port 18791.
 // Migrate it exactly once and remove the legacy key so forget cannot revive it.
 let migration;
@@ -138,6 +200,7 @@ function createClient(port) {
     abortStart: undefined,
     pairingReserved: false,
     persist: { wrote: false, wasSaved: false, committed: false },
+    messageTimes: [],
   };
 }
 
@@ -257,6 +320,9 @@ async function startClient(client, { code, restoreEpoch } = {}) {
               fail(new Error(`COMMAND_CANCELED: connection to port ${port} was canceled`));
               return;
             }
+            // A first pairing starts at the current message head; a reconnect
+            // keeps its saved cursor so messages that arrived offline are read.
+            if (client.persist.wasSaved === false) await initMessageCursor(client, port);
             client.connected = true;
             client.persist.committed = true;
             client.version = chrome.runtime.getManifest().version;
@@ -338,6 +404,91 @@ function sendResult(client, message, response) {
   client.socket.send(body.length <= MAX_MESSAGE ? body : JSON.stringify({ type: 'result', id: message.id, error: 'RESULT_TOO_LARGE' }));
 }
 
+// Only the count and the senders reach the bridge; message text stays in
+// storage until a tool asks for it, so the model never reads it unwittingly.
+function pushInbox(sender, messages, cursors) {
+  const delivered = [];
+  for (const peer of clients.values()) {
+    if (peer === sender || !peer.connected || !isCurrent(peer) || peer.socket?.readyState !== WebSocket.OPEN) continue;
+    const unread = visibleMessages(String(peer.port), messages, cursors[String(peer.port)] ?? 0);
+    if (!unread.length) continue;
+    const senders = [...new Set(unread.map(message => message.from))].slice(0, 3);
+    // The bridge only accepts counts up to the same cap, so clamp here instead
+    // of sending a hint it would reject; chrome_messages still pages through.
+    const count = Math.min(unread.length, MESSAGE_UNREAD_MAX);
+    peer.socket.send(JSON.stringify({ type: 'inbox', unread: count, senders }));
+    delivered.push(String(peer.port));
+  }
+  return delivered;
+}
+
+async function sendAgentMessage(client, message, args) {
+  const to = messageTarget(args.to);
+  // Another agent writes this text, so drop control characters (escape
+  // sequences, NUL) before storing it; newlines and tabs are kept.
+  const text = args.text.replace(/[\u0000-\u0008\u000B-\u001F\u007F]/g, '').trim();
+  if (!text) throw new Error('MESSAGE_TEXT: text must not be blank');
+  takeMessageSlot(client);
+  const from = String(client.port);
+  const state = await mutateStorage(async () => {
+    const stored = await chrome.storage.local.get(MESSAGE_STORAGE_KEYS);
+    const now = Date.now();
+    const messages = pruneMessages(validMessages(stored.agentMessages), now);
+    const entry = { id: messageSeq(stored, messages) + 1, at: now, from, to, text };
+    messages.push(entry);
+    const kept = messages.length > MESSAGE_LIMIT ? messages.slice(-MESSAGE_LIMIT) : messages;
+    const cursors = validMessageCursors(stored.agentCursors);
+    await chrome.storage.local.set({ agentMessages: kept, agentSeq: entry.id });
+    return { entry, messages: kept, cursors };
+  });
+  const delivered = pushInbox(client, state.messages, state.cursors);
+  sendResult(client, message, { result: { ...state.entry, delivered } });
+}
+
+async function readAgentMessages(client, message, args) {
+  const port = String(client.port);
+  const limit = args.limit ?? 20;
+  const outcome = await mutateStorage(async () => {
+    const stored = await chrome.storage.local.get(MESSAGE_STORAGE_KEYS);
+    const raw = validMessages(stored.agentMessages);
+    const messages = pruneMessages(raw, Date.now());
+    const cursors = validMessageCursors(stored.agentCursors);
+    const cursor = cursors[port] ?? 0;
+    // `after` replays from an explicit id but never moves the saved cursor
+    // backwards, so the next normal read continues where it left off.
+    const start = args.after === undefined ? cursor : args.after;
+    const visible = visibleMessages(port, messages, start);
+    const unread = visibleMessages(port, messages, cursor);
+    // A busy inbox is capped instead of failing: return the newest page the
+    // bridge can report, so the reader catches up without dumping everything.
+    const page = unread.length > MESSAGE_UNREAD_MAX ? visible.slice(-MESSAGE_UNREAD_MAX) : visible.slice(0, limit);
+    const nextCursor = Math.max(cursor, page.length ? page[page.length - 1].id : cursor);
+    const unreadAfter = visibleMessages(port, messages, nextCursor).length;
+    const patch = {};
+    if (messages.length !== raw.length) patch.agentMessages = messages;
+    if (nextCursor !== cursor) {
+      cursors[port] = nextCursor;
+      patch.agentCursors = cursors;
+    }
+    if (Object.keys(patch).length) await chrome.storage.local.set(patch);
+    return { messages: page, cursor: nextCursor, unread: unreadAfter };
+  });
+  sendResult(client, message, { result: outcome });
+}
+
+async function initMessageCursor(client, port) {
+  await mutateStorage(async () => {
+    if (!isCurrent(client)) return;
+    const stored = await chrome.storage.local.get(MESSAGE_STORAGE_KEYS);
+    const messages = pruneMessages(validMessages(stored.agentMessages), Date.now());
+    const cursors = validMessageCursors(stored.agentCursors);
+    // A fresh pairing starts at the current head instead of replaying history;
+    // a reconnect keeps its saved cursor so offline messages still arrive.
+    cursors[String(port)] = messageSeq(stored, messages);
+    await chrome.storage.local.set({ agentCursors: cursors });
+  });
+}
+
 async function settleFailedLease(client, tabId, action) {
   if (tabId === undefined || leases.owner(tabId) !== client) return;
   // A failed command must never clear a tab that is waiting for native cleanup.
@@ -363,6 +514,17 @@ async function handleCommand(client, message) {
     args = validateArgs(`chrome_${action}`, message.args);
   } catch (error) {
     sendResult(client, message, { error: String(error.message).slice(0, 2000) });
+    return;
+  }
+  // Inbox tools only touch extension storage: they need no tab, input lock,
+  // lease or controller access, so they never take a busy tab or a task slot.
+  if (action === 'send_message' || action === 'messages') {
+    try {
+      if (action === 'send_message') await sendAgentMessage(client, message, args);
+      else await readAgentMessages(client, message, args);
+    } catch (error) {
+      sendResult(client, message, { error: String(error.message).slice(0, 2000) });
+    }
     return;
   }
   const tabId = Number.isSafeInteger(args.tabId) ? args.tabId : undefined;
