@@ -15,5 +15,6 @@ assert.equal(manifest.manifest_version, 3);
 assert.deepEqual(manifest.permissions, ['debugger', 'tabs', 'tabGroups', 'storage', 'alarms', 'downloads']);
 assert.equal(manifest.host_permissions, undefined);
 assert.equal(manifest.content_scripts, undefined);
+assert.equal(manifest.content_security_policy.extension_pages, "script-src 'self'; object-src 'none'; connect-src ws://127.0.0.1:*");
 assert.ok(pkg.dsh.bundle.patch);
 console.log('JavaScript syntax, package and extension manifest checks passed.');

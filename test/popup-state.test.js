@@ -1,31 +1,39 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { popupState } from '../extension/popup-state.js';
+import { popupState, connectionRow } from '../extension/popup-state.js';
 
-test('connected popup hides the pairing form and the intro block', () => {
-  const show = popupState({ connected: true, paired: true });
-  assert.equal(show.formHidden, true);
-  assert.equal(show.introHidden, true);
+test('connected popup lists each connected port', () => {
+  const show = popupState({ connections: [{ port: 18791, connected: true, version: '0.6.7' }, { port: 18793, connected: false }] });
+  assert.equal(show.connected, true);
+  assert.equal(show.paired, true);
+  assert.equal(show.connectedCount, 1);
+  assert.equal(show.statusText, '已连接 1 个 Harness');
+  assert.deepEqual(show.connections.map(row => row.port), [18791, 18793]);
+  assert.equal(show.connections[0].canConnect, false);
+  assert.equal(show.connections[1].canConnect, true);
 });
 
-test('paired but disconnected keeps only the connect button', () => {
-  const show = popupState({ connected: false, paired: true });
-  assert.deepEqual(show, {
-    formHidden: false,
-    labelHidden: true,
-    codeHidden: true,
-    permissionHidden: true,
-    helpHidden: true,
-    introHidden: false,
-    introText: '已保存配对，点下面的“连接”即可。',
-  });
+test('saved but disconnected popup keeps the pairing form and offers Connect', () => {
+  const show = popupState({ connections: [{ port: 18793, connected: false }], reconnecting: true });
+  assert.equal(show.connected, false);
+  assert.equal(show.paired, true);
+  assert.equal(show.reconnecting, true);
+  assert.equal(show.statusText, '已配对，正在等待本机 Harness');
+  assert.equal(show.connections[0].canConnect, true);
 });
 
-test('unpaired popup shows the code input, the full explanation and the pairing steps', () => {
-  const show = popupState({ connected: false, paired: false });
-  assert.equal(show.formHidden, false);
-  assert.equal(show.codeHidden, false);
-  assert.equal(show.permissionHidden, false);
-  assert.equal(show.introHidden, false);
-  assert.match(show.introText, /8 位配对码/);
+test('unpaired popup starts from an empty connection list', () => {
+  const show = popupState({ connections: [] });
+  assert.equal(show.connected, false);
+  assert.equal(show.paired, false);
+  assert.equal(show.statusText, '尚未配对');
+  assert.deepEqual(show.connections, []);
+});
+
+test('a failed connection shows its per-port error without hiding Connect', () => {
+  const row = connectionRow({ port: 18793, connected: false, error: 'Connection to port 18793 timed out.' });
+  assert.equal(row.state, 'error');
+  assert.equal(row.canConnect, true);
+  assert.match(row.text, /端口 18793/);
+  assert.match(row.text, /timed out/);
 });

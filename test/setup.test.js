@@ -10,13 +10,13 @@ test('chrome_setup sends users to the published Chrome Web Store listing', () =>
   assert.match(setup.note, /updates store-installed extensions automatically/);
 });
 
-test('popup puts the one-sentence usage and the repository link above the status', async () => {
+test('popup asks only for the pairing code, with no port or usage text', async () => {
   const html = await readFile(new URL('../extension/popup.html', import.meta.url), 'utf8');
-  const intro = html.indexOf('class="intro"');
-  assert.ok(intro > html.indexOf('</header>'), 'usage block follows the header');
-  assert.ok(intro < html.indexOf('id="status"'), 'usage block is above the status line');
-  assert.match(html.slice(intro, html.indexOf('id="status"')), /使用方法：在 Harness 里说/);
-  assert.match(html.slice(intro, html.indexOf('id="status"')), /https:\/\/github\.com\/tao1020\/dsh-chrome-use/);
+  assert.match(html, /id="code"/);
+  assert.match(html, /id="pair-form"/);
+  assert.doesNotMatch(html, /id="port"/);
+  assert.doesNotMatch(html, /使用方法：/);
+  assert.doesNotMatch(html, /class="intro"/);
 });
 
 test('popup offers the foreground-mode switch with one line per mode', async () => {
@@ -32,6 +32,6 @@ test('popup and settings invite the user to star the repository', async () => {
   assert.match(popup, /喜欢这个插件？点个 Star，让更多人发现它 ⭐/);
   assert.match(popup, /https:\/\/github\.com\/tao1020\/dsh-chrome-use/);
   const client = await readFile(new URL('../src/client.js', import.meta.url), 'utf8');
-  assert.match(client, /觉得好用？点个 Star ⭐ 这对我们很重要/);
+  assert.match(client, /喜欢这个插件？去 GitHub 点个 Star/);
   assert.match(client, /const repositoryUrl = 'https:\/\/github\.com\/tao1020\/dsh-chrome-use'/);
 });

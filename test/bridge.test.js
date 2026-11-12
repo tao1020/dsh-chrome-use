@@ -1,11 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
+import { createServer } from 'node:http';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { WebSocket } from 'ws';
 import { Bridge } from '../src/bridge.js';
+import { decodePairingCode, encodePairingCode } from '../extension/pairing-code.js';
 import { PARALLEL_TABS } from '../extension/protocol.js';
 
 const origin = `chrome-extension://${'a'.repeat(32)}`;
@@ -48,6 +50,63 @@ function hold(ws, shouldHold = () => true) {
   });
   return { held, sent };
 }
+
+test('reports the occupied port with the environment override hint', async t => {
+  const blocker = createServer();
+  await new Promise(resolve => blocker.listen(0, '127.0.0.1', resolve));
+  const port = blocker.address().port;
+  t.after(() => new Promise(resolve => blocker.close(resolve)));
+  const bridge = new Bridge({ port });
+  await assert.rejects(bridge.start(), new RegExp(`Port ${port} is unavailable`));
+});
+
+test('pair returns both the legacy numeric alias and an encoded port code', async t => {
+  const bridge = await fixture(t);
+  const pairing = bridge.pair();
+  assert.match(pairing.code, /^\d{8}$/);
+  assert.equal(pairing.code.length, 8);
+  assert.equal(pairing.pairingCode.length, 8);
+  assert.match(pairing.pairingCode, /^[0-9A-HJKMNP-TV-Z]{8}$/);
+  assert.ok(/[A-Z]/.test(pairing.pairingCode));
+  const decoded = decodePairingCode(pairing.pairingCode);
+  assert.equal(decoded.port, bridge.port);
+  assert.ok(Number.isSafeInteger(decoded.nonce));
+  assert.equal(pairing.port, bridge.port);
+});
+
+test('encoded and legacy codes authenticate, and one success consumes both', async t => {
+  const bridge = await fixture(t);
+  const { pairingCode, code } = bridge.pair();
+  const encoded = await socket(bridge, { type: 'pair', code: pairingCode });
+  assert.equal(encoded.response.type, 'ready');
+  assert.equal(bridge.status().connected, true);
+  const closed = once(encoded.ws, 'close');
+  encoded.ws.close();
+  await closed;
+  const legacy = await socket(bridge, { type: 'pair', code });
+  assert.match(legacy.response.error, /AUTH_FAILED/);
+});
+
+test('a code encoded for another port is rejected', async t => {
+  const bridge = await fixture(t);
+  bridge.pair();
+  const wrong = encodePairingCode(18793, 1);
+  const result = await socket(bridge, { type: 'pair', code: wrong });
+  assert.match(result.response.error, /AUTH_FAILED/);
+  assert.equal(bridge.status().connected, false);
+});
+
+test('encoded and legacy forms share the five-attempt budget', async t => {
+  const bridge = await fixture(t);
+  const pairing = bridge.pair();
+  const wrongEncoded = encodePairingCode(18793, 2);
+  for (const code of [wrongEncoded, '00000000', wrongEncoded, '00000000', wrongEncoded]) {
+    const result = await socket(bridge, { type: 'pair', code });
+    assert.match(result.response.error, /AUTH_FAILED/);
+  }
+  const correct = await socket(bridge, { type: 'pair', code: pairing.pairingCode });
+  assert.match(correct.response.error, /AUTH_FAILED/);
+});
 
 test('binds loopback and rejects ordinary website origins and HTTP access', async t => {
   const bridge = await fixture(t);
@@ -383,4 +442,27 @@ test('a fresh claim clears the remembered detach reason', async t => {
   await bridge.call('claim', { tabId: 7 }, 'a');
   await bridge.call('release', { tabId: 7 }, 'a');
   await assert.rejects(bridge.call('snapshot', { tabId: 7 }, 'a'), error => /TAB_NOT_OWNED: claim the tab first$/.test(error.message));
+});
+
+test('two bridges with separate state dirs keep independent pairing identities', async t => {
+  const roots = await Promise.all([
+    mkdtemp(join(tmpdir(), 'dsh-chrome-use-bridge-a-')),
+    mkdtemp(join(tmpdir(), 'dsh-chrome-use-bridge-b-')),
+  ]);
+  t.after(() => Promise.all(roots.map(root => rm(root, { recursive: true, force: true }))));
+  const first = new Bridge({ port: 0, stateDir: roots[0] });
+  const second = new Bridge({ port: 0, stateDir: roots[1] });
+  await Promise.all([first.start(), second.start()]);
+  t.after(() => Promise.all([first.stop(), second.stop()]));
+  const pairedFirst = await pair(first);
+  const pairedSecond = await pair(second);
+  const firstToken = pairedFirst.response.token;
+  const secondToken = pairedSecond.response.token;
+  assert.notEqual(firstToken, secondToken);
+  assert.equal(JSON.parse(await readFile(join(roots[0], 'pairing.json'))).token, firstToken);
+  assert.equal(JSON.parse(await readFile(join(roots[1], 'pairing.json'))).token, secondToken);
+  const wrongOnSecond = await socket(second, { type: 'auth', token: firstToken });
+  assert.match(wrongOnSecond.response.error, /AUTH_FAILED/);
+  const wrongOnFirst = await socket(first, { type: 'auth', token: secondToken });
+  assert.match(wrongOnFirst.response.error, /AUTH_FAILED/);
 });

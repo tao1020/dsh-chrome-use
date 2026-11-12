@@ -40,13 +40,39 @@ dsh plugin --profile desktop add dsh-chrome-use
 
 ### 3. 配对连接
 
-在 Harness 设置 → dsh-chrome-use 点“生成配对码”；在 Chrome 工具栏打开 dsh-chrome-use 扩展，输入 8 位配对码，点“连接”。也可以在对话里说：“请用 chrome_pair 连接浏览器。”
+在 Harness 设置 → dsh-chrome-use 点“生成配对码”；在 Chrome 工具栏打开 dsh-chrome-use 扩展，粘贴 8 位配对码（可能含字母，已包含端口，不用手填），点“连接”。也可以在对话里说：“请用 chrome_pair 连接浏览器。”
 
 需要 Google Chrome 120 或更新版本、DeepSeek Harness 0.2.1-rc.2 或更新版本。开发和测试使用 Node.js 22 或 24。
 
-配对成功后，重启 Harness、Chrome 或扩展自动更新都会自动重连。点“断开连接”会停止自动重连；下次配对码留空，点“连接”即可。清除配对数据后需要重新配对。
+配对成功后，重启 Harness、Chrome 或扩展自动更新都会自动重连。点“断开全部连接”会停止自动重连；下次配对码留空，点“连接”即可。清除配对数据后需要重新配对。
 
 **连接即允许 Harness 操作此 Chrome 中的全部普通网页，包括已登录的网站。** 网页内容、截图和调试信息可能发送给你在 Harness 配置的模型服务。详见 [隐私说明](PRIVACY.md)。
+
+### 4. 多个 Harness 同时连接（可选）
+
+不设置 `DSH_CHROME_USE_PORT` 时，插件自动选择端口：先试上次成功的端口（`~/.dsh/dsh-chrome-use/port.json`），再试 18791、18793..18799，跳过 18792。第一个可用端口生效，端口被占用不会让启动直接失败。设置页会显示实际端口。
+
+设置 `DSH_CHROME_USE_PORT` 时严格使用该端口；端口被占用就报 `BRIDGE_START_FAILED`，不会自动换端口。脚本和测试建议显式设置。
+
+```sh
+DSH_CHROME_USE_PORT=18793 dsh
+```
+
+桌面版从图形界面启动时，可能读不到 shell 的环境变量。需要按桌面版的方式设置环境变量，或者从终端启动。
+
+配对第二个 Harness 时，把新的 `pairingCode` 粘贴到扩展弹窗即可；它已经包含实际端口。扩展会分别保存每个端口的配对令牌，最多保存 4 个。如果实际端口发生变化，旧令牌会失效，需要用新的配对码重新配对。纯数字旧版兼容码仍只用于 18791。
+
+端口 18792 留给 `scripts/fixture.mjs` 测试页。自动选择会跳过它。
+
+自动模式共用同一个 `port.json`。同时运行多个 Harness 时，建议各自显式设置 `DSH_CHROME_USE_PORT`；否则端口可能随启动顺序变化，导致旧令牌失效、需要重新配对。
+
+多个 Harness 可以同时操作不同的标签页，同一个标签页仍只归一个 Harness。另一个 Harness 抢先占用时返回 `TAB_OWNED_BY_ANOTHER_HARNESS`，不会排队等待。原来的单 Harness 安装不需要改配置。
+
+### 5. Codex、OpenCode 和其他 Harness
+
+本包是 DSH/Cordis 插件。`package.json` 没有 MCP 入口，也没有命令行入口；把 npm 包装进 Codex 或 OpenCode，不会自动出现 `chrome_*` 工具。
+
+需要手工联调时，可以用独立 JSON 运行器启动同一个 bridge。它不注册 MCP 工具，只按行读取 JSON。具体步骤见 [独立 JSON 运行器](docs/standalone-runner.md)。
 
 ## 能做什么
 
@@ -101,7 +127,7 @@ node scripts/fixture.mjs
 
 最后一个命令启动专用测试页：`http://127.0.0.1:18792/`。保持服务运行，把 [验收提示词](docs/harness-test-prompt.md) 交给 Harness。使用 `dsh --profile headless --json` 可记录工具调用和最终结论。模型、API Key 和插件必须配置在测试使用的 profile 中。
 
-无需模型时，可以运行 `npm run dev`，按行输入 JSON，例如 `{"action":"status"}`。首次连接用 `{"action":"pair"}` 生成配对码。调试服务和 Harness 共用已保存的配对，也使用同一端口，运行其中一个即可。
+无需模型时，可以运行 `npm run dev`，按行输入 JSON，例如 `{"action":"status"}`。首次连接用 `{"action":"pair"}` 生成配对码。未设置 `DSH_CHROME_USE_PORT` 时它和插件一样自动选择端口；设置时严格使用该端口。配对信息按实际端口保存在 `~/.dsh/dsh-chrome-use/` 或 `~/.dsh/dsh-chrome-use/port-<端口>/`。调试服务和 Harness 不要同时占用同一个端口。
 
 开发扩展时不用装商店版：在 `chrome://extensions` 开启“开发者模式”，点击“加载已解压的扩展程序”，选择本仓库的 `extension/` 目录；改完代码在该页点击刷新。
 
@@ -109,10 +135,13 @@ node scripts/fixture.mjs
 
 ## 排查连接问题
 
-- `BRIDGE_START_FAILED`：通常是另一个 Harness profile 或调试服务占用了端口 18791。先停止重复服务。
-- `AUTH_FAILED`：在 Harness 设置页的 dsh-chrome-use 里点“生成配对码”（或让 AI 调用 `chrome_pair`），再到扩展弹窗连接。
+- `BRIDGE_START_FAILED`：显式指定的端口被占用，或自动选择的候选端口全部被占用。先停止重复服务，或用 `DSH_CHROME_USE_PORT` 指定一个空闲端口。
+- `AUTH_FAILED`：在 Harness 设置页的 dsh-chrome-use 里点“生成配对码”（或让 AI 调用 `chrome_pair`），再到扩展弹窗连接。实际端口变化后旧令牌会失效，需要用新的 `pairingCode` 重新配对。
 - `TAB_IN_USE`：等待 10 秒后，其他 Harness 会话仍占用该页。让原会话释放，或新建自己的标签页。
 - `TAB_BUSY`：这个标签页还有一条命令在运行。等它结束再操作同一页，或改用其他标签页；不同标签页可以直接并行。
+- `TAB_OWNED_BY_ANOTHER_HARNESS`：另一个 Harness 已占用这个标签页。让它在自己的会话里调用 `chrome_release`，或者换一个标签页。这个错误不会跨 Harness 排队。
+- `TAB_LEASE_QUARANTINED`：Chrome 没能完成上一次调试清理。重载扩展后再试；在重载前不要继续操作这个标签页。
+- `TAB_LEASE_CLOSING`：这个标签页正在被另一个 Harness 断开或清理。等清理完成后再试；不要循环重试。
 - Chrome 调试器冲突：关闭该页的 DevTools 或释放其他浏览器工具的会话，再检查连接。不要同时用 Codex 和 Harness 操作同一页。
 - 操作超时或取消：请求停止这一条命令，等扩展确认清理完成后才释放操作锁，不会自动重放。其他标签页通常不受影响；若清理超过 8 秒仍未确认，会断开连接，避免旧操作影响新会话。取消打开页面时若收到迟到的成功结果，也会断开，以清理无人占用的调试连接；新页面可能保留。旧版扩展无法单独取消命令，也会断开。重新占用并读取页面，确认之前的点击或输入是否已经发生。
 
@@ -123,6 +152,7 @@ node scripts/fixture.mjs
 - **仅支持 HTTP(S)**：仅支持普通 HTTP(S) 网页，不支持 Chrome 内部页面、本地文件或扩展页面。
 - **其他页面调试**：Chrome 还可能限制其他页面的调试。
 - **并发锁需要同步更新**：并发和前台操作锁需要新版 Harness 插件与 Chrome 扩展一起更新。旧扩展仍一次只执行一条命令。
+- **多 Harness 同时连接**：需要新版扩展；旧扩展只有一个连接，只支持 18791，不会跟随自动选择的端口。不同 Harness 之间标签页占用由扩展统一管理；同一 Harness 内部的排队规则不变。
 - **锁只协调本插件操作**：锁只协调本插件发出的操作，不能阻止你手动切页、其他扩展或网页脚本改变焦点。
 - **会话占用不会自动到期**：会话遗留的占用不会自动到期，以免打断仍在工作的会话。应让原会话释放。
 - **顶层页面元素**：点击、输入和拖拽目前仅支持顶层页面元素，不支持跨域 iframe。

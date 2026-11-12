@@ -3,20 +3,18 @@
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>dsh-chrome-use</title><link rel="stylesheet" href="popup.css"></head>
 <body>
   <header><img class="mark" src="icon-48.png" alt=""><div><h1>dsh-chrome-use</h1><p>连接你的 Harness 与浏览器</p></div></header>
-  <section class="intro" id="intro" aria-label="使用方法">
-    <p class="intro-text" id="intro-text">使用方法：在 Harness 里说“请用 chrome_pair 连接浏览器”，把收到的 8 位配对码填到下面，点击“连接”即可让 AI 操作网页。</p>
-    <p class="intro-link"><a href="https://github.com/tao1020/dsh-chrome-use" target="_blank" rel="noreferrer">使用说明与源码（GitHub）</a></p>
-  </section>
   <main>
     <p id="status" role="status">正在检查连接…</p>
+    <ul id="connections" aria-label="已配对的 Harness"></ul>
     <form id="pair-form">
-      <label for="code" id="pair-label">首次连接：输入 Harness 给出的配对码</label>
       <p class="help permission" id="permission-help">连接后，Harness 可以读取和操作此 Chrome 中的所有普通网页，包括已经登录的网站。网页内容、截图和调试信息可能发送给你配置的模型服务。</p>
-      <div class="pair-row"><input id="code" inputmode="numeric" autocomplete="off" maxlength="8" placeholder="8 位配对码"><button type="submit">连接</button></div>
-      <p class="help" id="pair-help">只需首次配对，成功后自动重连。临时码 2 分钟内有效，已保存的配对不会定时过期。</p>
+      <div class="pair-row">
+        <input id="code" aria-label="配对码" inputmode="text" autocapitalize="characters" autocomplete="off" spellcheck="false" maxlength="8" placeholder="粘贴 8 位配对码">
+        <button type="submit">连接</button>
+      </div>
     </form>
     <section>
-      <p class="help">连接后，AI 自动选择网页，无需逐页授权。点击“断开连接”可以停止全部操作。</p>
+      <p class="help">连接后，AI 自动选择网页，无需逐页授权。点击“断开全部连接”可以停止全部操作。</p>
       <h2>正在调试的标签页</h2><ul id="tabs"><li>当前没有调试中的标签页</li></ul>
     </section>
     <section aria-label="运行模式">
@@ -25,7 +23,7 @@
       <p class="help" id="foreground-on">开：操作时会把浏览器窗口抬到最前，会抢走你正在用的应用的焦点。</p>
       <p class="help" id="foreground-off">关：只在浏览器窗口内切换标签页，不抢焦点；窗口被最小化或完全遮挡时，操作会返回 PAGE_HIDDEN。改完立即生效，不用重新连接。</p>
     </section>
-    <button id="disconnect" class="secondary">断开连接</button>
+    <button id="disconnect" class="secondary">断开全部连接</button>
     <p id="error" role="alert"></p>
   </main>
   <footer>
