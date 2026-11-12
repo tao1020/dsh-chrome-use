@@ -68,7 +68,7 @@ async function checkRelease(current, fetcher = fetch) {
   } finally { clearTimeout(timer); }
 }
 
-const packageVersion = "0.9.0";
+const packageVersion = "0.9.1";
 // Wrapped by scripts/build-client.mjs for the Harness browser module loader.
 const React = require('react');
 const { createElement: h, useState, useEffect, useRef } = React;

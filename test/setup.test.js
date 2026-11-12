@@ -41,6 +41,9 @@ test('popup and settings invite the user to star the repository', async () => {
   const popup = await readFile(new URL('../extension/popup.html', import.meta.url), 'utf8');
   assert.match(popup, /喜欢这个插件？点个 Star，让更多人发现它 ⭐/);
   assert.match(popup, /https:\/\/github\.com\/tao1020\/dsh-chrome-use/);
+  const headerEnd = popup.indexOf('</header>');
+  assert.ok(popup.indexOf('点个 Star') < headerEnd, 'star link sits in the header, above the divider');
+  assert.ok(popup.indexOf('点个 Star') > popup.indexOf('连接你的所有 Harness 与浏览器'));
   const client = await readFile(new URL('../src/client.js', import.meta.url), 'utf8');
   assert.match(client, /喜欢这个插件？去 GitHub 点个 Star/);
   assert.match(client, /const repositoryUrl = 'https:\/\/github\.com\/tao1020\/dsh-chrome-use'/);
