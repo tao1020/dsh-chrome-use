@@ -18,7 +18,9 @@ export const inject = ['tools'];
 
 export function bridgeOptions(env, baseStateDir) {
   const configured = env?.DSH_CHROME_USE_PORT?.trim();
-  return configured ? { port: parsePort(configured), baseStateDir } : { auto: true, baseStateDir };
+  const options = configured ? { port: parsePort(configured), baseStateDir } : { auto: true, baseStateDir };
+  const name = env?.DSH_CHROME_USE_NAME?.trim().slice(0, 40);
+  return name ? { ...options, name } : options;
 }
 
 // DSH accepts a JSON Schema subset. Keep full bounds in the shared validator.

@@ -8,7 +8,7 @@ const configured = process.env.DSH_CHROME_USE_PORT?.trim();
 const port = configured ? parsePort(configured) : undefined;
 const baseDir = join(homedir(), '.dsh', 'dsh-chrome-use');
 // The bridge selects the effective port and derives its pairing identity from it.
-const bridge = new Bridge({ ...(port === undefined ? { auto: true } : { port }), baseStateDir: baseDir });
+const bridge = new Bridge({ ...(port === undefined ? { auto: true } : { port }), baseStateDir: baseDir, name: process.env.DSH_CHROME_USE_NAME });
 await bridge.start();
 console.log(JSON.stringify({ status: bridge.status(), instructions: 'Saved pairing reconnects automatically. For first-time pairing, enter {"action":"pair"}.' }));
 let stopped = false;

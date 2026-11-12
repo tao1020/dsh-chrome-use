@@ -11,6 +11,8 @@ test('connected popup lists each connected port', () => {
   assert.deepEqual(show.connections.map(row => row.port), [18791, 18793]);
   assert.equal(show.connections[0].canConnect, false);
   assert.equal(show.connections[1].canConnect, true);
+  assert.equal(show.connections[0].title, '端口 18791');
+  assert.equal(show.connections[0].meta, '已连接 · 0.6.7');
 });
 
 test('saved but disconnected popup keeps the pairing form and offers Connect', () => {
@@ -30,10 +32,19 @@ test('unpaired popup starts from an empty connection list', () => {
   assert.deepEqual(show.connections, []);
 });
 
-test('a failed connection shows its per-port error without hiding Connect', () => {
+test('a named harness replaces the bare port in the row title', () => {
+  const row = connectionRow({ port: 18793, connected: true, version: '0.9.0', name: 'Codex' });
+  assert.equal(row.title, 'Codex · 18793');
+  assert.equal(row.meta, '已连接 · 0.9.0');
+  assert.equal(row.error, '');
+});
+
+test('a failed connection keeps the error behind the icon without hiding Connect', () => {
   const row = connectionRow({ port: 18793, connected: false, error: 'Connection to port 18793 timed out.' });
   assert.equal(row.state, 'error');
   assert.equal(row.canConnect, true);
-  assert.match(row.text, /端口 18793/);
-  assert.match(row.text, /timed out/);
+  assert.equal(row.title, '端口 18793');
+  assert.equal(row.meta, '未连接');
+  assert.match(row.error, /timed out/);
+  assert.match(row.hint, /Harness 可能已离线/);
 });

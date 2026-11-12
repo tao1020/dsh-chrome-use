@@ -4,7 +4,7 @@ import { dirname, join } from 'node:path';
 import { PORT } from '../extension/protocol.js';
 
 export const FIXTURE_PORT = 18792;
-export const AUTO_PORTS = [PORT, 18793, 18794, 18795, 18796, 18797, 18798, 18799];
+export const AUTO_PORTS = [PORT, 18793, 18794, 18795, 18796, 18797, 18798, 18799, 18800, 18801];
 export const PREFERENCE_FILE = 'port.json';
 
 export function isValidAutoPort(value) {

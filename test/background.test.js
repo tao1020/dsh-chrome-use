@@ -18,6 +18,7 @@ async function fixture(t, initial = {}) {
   const alarms = new Set();
   const tabUrls = new Map();
   const readyTokens = new Map();
+  const readyNames = new Map();
   const heldReady = new Set();
   let autoReady = true;
   let nextTabId = 9;
@@ -82,7 +83,8 @@ async function fixture(t, initial = {}) {
       if (message.type !== 'auth' && message.type !== 'pair') return;
       const reply = () => {
         if (this.readyState !== 1) return;
-        this.onmessage?.({ data: JSON.stringify({ type: 'ready', protocol: 1, token: readyTokens.get(this.port) ?? 'a'.repeat(64) }) });
+        const name = readyNames.get(this.port);
+        this.onmessage?.({ data: JSON.stringify({ type: 'ready', protocol: 1, token: readyTokens.get(this.port) ?? 'a'.repeat(64), ...(name ? { name } : {}) }) });
       };
       if (autoReady && !heldReady.has(this.port)) queueMicrotask(reply);
       else this.pendingReady = reply;
@@ -120,7 +122,7 @@ async function fixture(t, initial = {}) {
   await settled();
   return {
     stored, sockets, alarms, listeners, message, settled, command, commandOn, socketFor, socketCount,
-    api, readyTokens, heldReady,
+    api, readyTokens, heldReady, setReadyName: (port, name) => readyNames.set(port, name),
     holdReady: port => { autoReady = false; heldReady.add(port); },
     releaseReady,
     setNextTabId: id => { nextTabId = id; },
@@ -169,6 +171,25 @@ test('a saved pair waits for Connect, then reconnects without a code and restore
   assert.equal(socketCount(18791), 1); // one original, never a duplicate
   await settled();
   assert.equal((await message('status')).connected, true);
+});
+
+test('a bridge name is saved and shown in status, and survives a reconnect without one', async t => {
+  const { message, setReadyName, stored, socketFor, settled } = await fixture(t, {
+    connections: [{ port: 18791, token: 'a'.repeat(64) }],
+    enabled: false,
+  });
+  setReadyName(18791, 'Codex');
+  await message('connect', { port: 18791 });
+  await settled();
+  assert.deepEqual(stored.connections, [{ port: 18791, token: 'a'.repeat(64), name: 'Codex' }]);
+  let status = await message('status');
+  assert.equal(status.connections[0].name, 'Codex');
+  socketFor(18791).close();
+  setReadyName(18791, undefined);
+  await message('connect', { port: 18791 });
+  await settled();
+  status = await message('status');
+  assert.equal(status.connections[0].name, 'Codex');
 });
 
 test('disconnect cancels a Connect before it has read saved state', async t => {
@@ -504,18 +525,16 @@ test('a late ready after disconnect does not persist a new connection', async t 
   assert.deepEqual(stored.connections, [{ port: 18791, token: 'a'.repeat(64) }]);
 });
 
-test('the fifth pairing is rejected before creating a socket', async t => {
+test('the eleventh pairing is rejected before creating a socket', async t => {
+  const ports = [18791, 18793, 18794, 18795, 18796, 18797, 18798, 18799, 18800, 18801];
   const { message, socketCount } = await fixture(t, {
-    connections: [
-      { port: 18791, token: 'a'.repeat(64) }, { port: 18793, token: 'b'.repeat(64) },
-      { port: 18794, token: 'c'.repeat(64) }, { port: 18795, token: 'd'.repeat(64) },
-    ],
+    connections: ports.map((port, index) => ({ port, token: '0123456789abcdef'[index].repeat(64) })),
     enabled: false,
   });
-  const result = await message('connect', { port: 18796, code: '12345678' });
+  const result = await message('connect', { port: 18802, code: '12345678' });
   assert.equal(result.ok, false);
   assert.match(result.error, /TOO_MANY_CONNECTIONS/);
-  assert.equal(socketCount(18796), 0);
+  assert.equal(socketCount(18802), 0);
 });
 
 test('failed native cleanup quarantines the tab instead of releasing it', async t => {

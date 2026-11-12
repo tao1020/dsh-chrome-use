@@ -10,13 +10,21 @@ import { candidatePorts, portStateDir, preferencePath, probePort, readPreferredP
 const equal = (a, b) => typeof a === 'string' && typeof b === 'string' && a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b));
 const extensionOrigin = /^chrome-extension:\/\/[a-p]{32}$/;
 const CLAIM_WAIT_MS = 10000;
+const normalizeName = value => {
+  if (typeof value !== 'string') return undefined;
+  const name = value.replace(/[\u0000-\u001F\u007F]/g, ' ').trim().slice(0, 40);
+  return name || undefined;
+};
 const portValue = value => {
   const port = typeof value === 'string' ? Number(value) : value;
   return Number.isSafeInteger(port) && port >= 1024 && port <= 65535 ? String(port) : undefined;
 };
 
 export class Bridge {
-  constructor({ port = PORT, auto = false, portCandidates, baseStateDir, stateDir, probe = probePort, deadlineMs = DEADLINE_MS, claimWaitMs = CLAIM_WAIT_MS } = {}) {
+  constructor({ port = PORT, auto = false, portCandidates, baseStateDir, stateDir, name, probe = probePort, deadlineMs = DEADLINE_MS, claimWaitMs = CLAIM_WAIT_MS } = {}) {
+    // Optional label the agent side shows in the popup so the user can tell
+    // Harnesses apart; it is display-only and never used for routing.
+    this.name = normalizeName(name);
     this.port = auto ? undefined : port;
     this.requestedPort = auto ? undefined : port;
     this.auto = auto;
@@ -243,7 +251,7 @@ export class Bridge {
           client.parallel = Array.isArray(message.features) && message.features.includes(PARALLEL_TABS);
           this.lastError = undefined;
           clearTimeout(timer);
-          client.send(JSON.stringify({ type: 'ready', token: identity.token, protocol: 1 }));
+          client.send(JSON.stringify({ type: 'ready', token: identity.token, protocol: 1, ...(this.name ? { name: this.name } : {}) }));
           return;
         }
         if (message.type === 'inbox') {
