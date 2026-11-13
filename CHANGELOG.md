@@ -3,6 +3,28 @@
 版本号遵循语义化版本。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 扩展版本和 Harness 插件版本始终一起发布，数字保持一致。
 
+## [0.10.0] - 2026-11-13
+
+### 新增
+
+- chrome_doctor：页面健康检查。不传 tabId 时报告连接、端口、扩展版本、插件版本和部署允许的工具；传 tabId 时再报告页面 URL、文档就绪状态、弹窗、验证码/人机校验、旧 ref、已执行动作数、控制台错误和未完成请求。不能确定为什么点不动时先查它。
+- chrome_wait_response：等待某次网络响应（urlContains、method、status 组合），可读取响应体，替代「反复轮询 chrome_network」。
+- chrome_assert：确认页面满足某个条件（元素可见/消失、选择器、文字、网址、predicate、networkIdle），默认立即返回，可短暂轮询；不满足时返回 ASSERT_FAILED，避免下一步靠猜。
+- chrome_content：按 selector 读取一块页面正文，输出 markdown、纯文本、HTML 或 JSON 大纲，maxChars 限制长度。
+- chrome_scrape：用 `name: selector` / `name: selector@attr` 字段表静态抽取结构化数据；给容器 selector 时逐容器重复。
+- 同源 iframe 与 open shadow DOM 支持：快照/查找会给子框架元素标 frame=true，点击和填写的坐标会自动换算到顶层视口；content、scrape、wait、assert 的选择器能穿透 open shadow DOM。
+- 快照和 chrome_doctor 增加 challenge 字段，识别 Cloudflare、reCAPTCHA、hCaptcha、Turnstile 等验证码/人机校验，提示交给用户处理。
+- 动作历史：chrome_history 不传 action 时列出本会话在该标签页执行过的工具、目标、是否可能已发送输入和失败码；不记录输入文字、表达式、predicate 和文件路径。
+
+### 变更
+
+- 所有失败都带结构化字段：错误消息第二行为 `Failure: {"code","actionSent","retry","hint"}`。actionSent 说明输入是否可能已经生效（null 表示不确定），retry 给出下一步建议（snapshot/claim/other-tab/wait/inspect/user/fix-args/fix-page/none），hint 是一句可执行的下一步说明。扩展、bridge 和工具结果三层都会保留这组字段。
+- 部署可以用 DSH_CHROME_USE_ALLOWED_ACTIONS 限制可用工具（逗号分隔短名，如 snapshot,tabs,click）；设置后未列出的工具返回 ACTION_NOT_ALLOWED；诊断类工具（chrome_setup/status/pair/doctor/report）始终可用，chrome_status 和 chrome_doctor 显示允许清单。
+
+### 文档
+
+- 运行期 skill 指南补充新工具、结构化失败字段、同源 iframe/shadow DOM 说明和动作开关。
+
 ## [0.9.4] - 2026-11-13
 
 ### 变更

@@ -290,7 +290,11 @@ export class Bridge {
             this.wake(task.tabId);
             return;
           }
-          if (message.error) task.reject(new Error(String(message.error).slice(0, 2000)));
+          if (message.error) {
+            const error = new Error(String(message.error).slice(0, 2000));
+            if (message.failure && typeof message.failure === 'object' && typeof message.failure.code === 'string') error.failure = message.failure;
+            task.reject(error);
+          }
           else if (message.result && typeof message.result === 'object' && !Array.isArray(message.result)) task.resolve(message.result);
           else task.reject(new Error('INVALID_BROWSER_RESPONSE'));
         }

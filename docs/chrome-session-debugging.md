@@ -21,7 +21,7 @@
 
 ## 读取结构和验证按钮
 
-`chrome_snapshot` 默认返回页面的可访问性结构，包括链接、按钮等可操作元素，最多 500 个条目，结果中的 `truncated` 表示是否截断。读文章正文用 `format: "text"` 或 `format: "markdown"`，这两种模式不返回 ref，也不会让旧 ref 失效。元素太多时用 `chrome_find` 按名称和角色查找。快照不返回完整 HTML，也不返回输入框的值。
+`chrome_snapshot` 默认返回页面的可访问性结构，包括链接、按钮等可操作元素，最多 500 个条目，结果中的 `truncated` 表示是否截断。读文章正文用 `format: "text"` 或 `format: "markdown"`，这两种模式不返回 ref，也不会让旧 ref 失效；也可以改用 `chrome_content` 按 selector 取一块区域，或 `chrome_scrape` 批量抽字段。元素太多时用 `chrome_find` 按名称和角色查找。快照不返回完整 HTML，也不返回输入框的值。同源子框架里的元素会带 `frame: true`；`challenge` 字段非空表示页面出现验证码/人机校验，需要用户处理。点不动或页面看起来不对时，先 `chrome_doctor` 看页面状态和未完成请求。
 
 要检查目标区域，可用 `chrome_evaluate` 执行下面的表达式。先根据快照确认选择器，再替换示例中的 `main`。
 

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { BrowserController, keyDescriptor, pageUrl, tabLocation } from '../extension/controller.js';
+import { BrowserController, POINT_FN, keyDescriptor, pageUrl, tabLocation } from '../extension/controller.js';
 import { TOOLS, validateArgs } from '../extension/protocol.js';
 
 function fixture(overrides = {}) {
@@ -67,6 +67,14 @@ test('schemas reject unknown fields, invalid URL schemes and boundaries', () => 
   assert.doesNotThrow(() => validateArgs('chrome_wait', { tabId: 1, selector: '#ready', gone: true, timeoutMs: 12000 }));
   assert.doesNotThrow(() => validateArgs('chrome_drag', { tabId: 1, fromRef: 'r1', toText: 'Drop here', steps: 20 }));
   assert.doesNotThrow(() => validateArgs('chrome_history', { tabId: 1, action: 'back' }));
+  assert.doesNotThrow(() => validateArgs('chrome_history', { tabId: 1, limit: 10 }));
+  assert.doesNotThrow(() => validateArgs('chrome_doctor', {}));
+  assert.doesNotThrow(() => validateArgs('chrome_doctor', { tabId: 1 }));
+  assert.doesNotThrow(() => validateArgs('chrome_wait_response', { tabId: 1, urlContains: '/api', status: 200 }));
+  assert.doesNotThrow(() => validateArgs('chrome_assert', { tabId: 1, selector: '#ok', timeoutMs: 500 }));
+  assert.doesNotThrow(() => validateArgs('chrome_content', { tabId: 1, selector: 'main', format: 'json' }));
+  assert.doesNotThrow(() => validateArgs('chrome_scrape', { tabId: 1, selector: '.card', fields: ['title: h1', 'link: a@href'] }));
+  assert.throws(() => validateArgs('chrome_assert', { tabId: 1, gones: true }), /INVALID_ARGUMENT/);
   assert.throws(() => validateArgs('chrome_history', { tabId: 1, action: 'undo' }), /INVALID_ARGUMENT/);
   assert.doesNotThrow(() => validateArgs('chrome_scroll_to', { tabId: 1, ref: 'r' }));
   assert.throws(() => validateArgs('chrome_scroll_to', { tabId: 1, ref: 'r', block: 'top' }), /INVALID_ARGUMENT/);
@@ -894,4 +902,166 @@ test('a Chrome initiated detach passes its reason to the listener', async () => 
   listeners.detach({ tabId: 7 }, 'replaced_with_devtools');
   assert.deepEqual(notifications, [[7, 'replaced_with_devtools']]);
   assert.equal(controller.attached.has(7), false);
+});
+
+test('wait_response resolves a response that arrives after the call started', async () => {
+  const { controller, api, calls, listeners } = fixture();
+  await controller.execute('claim', { tabId: 7 });
+  api.debugger.sendCommand = async (target, method, params) => {
+    calls.push([method, params]);
+    if (method === 'Network.getResponseBody') return { body: '{"ok":true}' };
+    if (method === 'Page.getFrameTree') return { frameTree: { frame: { id: 'main' } } };
+    return {};
+  };
+  const pending = controller.execute('wait_response', { tabId: 7, urlContains: '/api/items', includeBody: true });
+  await new Promise(resolve => setTimeout(resolve, 20));
+  listeners.event({ tabId: 7 }, 'Network.requestWillBeSent', { requestId: 'r1', request: { url: 'https://example.com/api/items', method: 'GET' }, type: 'XHR' });
+  listeners.event({ tabId: 7 }, 'Network.responseReceived', { requestId: 'r1', response: { status: 200, mimeType: 'application/json' }, type: 'XHR' });
+  const response = await pending;
+  assert.equal(response.status, 200);
+  assert.equal(response.method, 'GET');
+  assert.equal(response.text, '{"ok":true}');
+  assert.ok(response.waitedMs >= 0);
+});
+
+test('wait_response names the recent requests when nothing matches in time', async () => {
+  const { controller } = fixture();
+  await controller.execute('claim', { tabId: 7 });
+  await assert.rejects(controller.execute('wait_response', { tabId: 7, urlContains: '/never', timeoutMs: 100 }), /WAIT_TIMEOUT: no matching response within 100ms/);
+});
+
+test('assert passes at once and fails with the page still readable', async () => {
+  const { controller, api } = fixture();
+  await controller.execute('claim', { tabId: 7 });
+  assert.equal((await controller.execute('assert', { tabId: 7, selector: '#ready' })).passed, true);
+  api.debugger.sendCommand = async (target, method, params) => {
+    if (method === 'Runtime.evaluate') return { result: { value: false } };
+    return {};
+  };
+  await assert.rejects(controller.execute('assert', { tabId: 7, text: 'Saved' }), /ASSERT_FAILED: the condition was false after \d+ms/);
+});
+
+test('content reads one region, the body or a JSON outline', async () => {
+  const { controller, api, calls } = fixture();
+  await controller.execute('claim', { tabId: 7 });
+  api.debugger.sendCommand = async (target, method, params) => {
+    calls.push([method, params]);
+    if (method === 'Runtime.evaluate') {
+      assert.match(params.expression, /queryDeep/);
+      return { result: { value: params.expression.includes("const format = \"json\"") ? { value: [{ tag: 'h1', text: 'Title' }] } : { value: '# Title\n\nBody' } } };
+    }
+    return {};
+  };
+  const markdown = await controller.execute('content', { tabId: 7, selector: 'main' });
+  assert.equal(markdown.format, 'markdown');
+  assert.equal(markdown.selector, 'main');
+  assert.match(markdown.content, /^# Title/);
+  const outline = await controller.execute('content', { tabId: 7, format: 'json' });
+  assert.deepEqual(outline.content, '[{"tag":"h1","text":"Title"}]');
+  api.debugger.sendCommand = async () => ({ result: { value: { error: 'SELECTOR_NOT_FOUND' } } });
+  await assert.rejects(controller.execute('content', { tabId: 7, selector: '#missing' }), /SELECTOR_NOT_FOUND/);
+});
+
+test('scrape turns field specs into one object or one object per container', async () => {
+  const { controller, api, calls } = fixture();
+  await controller.execute('claim', { tabId: 7 });
+  api.debugger.sendCommand = async (target, method, params) => {
+    calls.push([method, params]);
+    if (method === 'Runtime.evaluate') {
+      const specs = JSON.parse(params.expression.match(/const specs = (\[.*?\]);/)[1]);
+      assert.deepEqual(specs[0], { name: 'title', selector: 'h1' });
+      assert.deepEqual(specs[1], { name: 'link', selector: 'a', attr: 'href' });
+      return { result: { value: { items: [{ title: 'A', link: '/a' }], matched: 1 } } };
+    }
+    return {};
+  };
+  const result = await controller.execute('scrape', { tabId: 7, selector: '.card', fields: ['title: h1', 'link: a@href'] });
+  assert.deepEqual(result.items, [{ title: 'A', link: '/a' }]);
+  assert.equal(result.matched, 1);
+});
+
+test('doctor works without a tab and reports page health with one', async () => {
+  const { controller } = fixture();
+  assert.equal((await controller.execute('doctor', {})).attached, false);
+  await controller.execute('claim', { tabId: 7 });
+  const report = await controller.execute('doctor', { tabId: 7 });
+  assert.equal(report.attached, true);
+  assert.equal(report.url, 'https://example.com/');
+  assert.equal(report.revision, 0);
+  assert.deepEqual(report.network.pending, 0);
+});
+
+test('history lists recorded actions and their failures without typed text', async () => {
+  const { controller } = fixture();
+  await controller.execute('claim', { tabId: 7 });
+  const snapshot = await controller.execute('snapshot', { tabId: 7 });
+  await controller.execute('click', { tabId: 7, ref: snapshot.elements[0].ref });
+  await assert.rejects(controller.execute('click', { tabId: 7, ref: 'missing' }), /STALE_ELEMENT/);
+  const history = await controller.execute('history', { tabId: 7 });
+  assert.ok(history.total >= 3);
+  assert.equal(history.actions.at(-1).ok, false);
+  assert.equal(history.actions.at(-1).failure.code, 'STALE_ELEMENT');
+  assert.equal(history.actions.at(-2).action, 'click');
+  assert.equal(history.actions.at(-2).ref, snapshot.elements[0].ref);
+  assert.ok(!JSON.stringify(history).includes('secret'));
+});
+
+test('snapshot flags subframe elements so a model knows where they live', async () => {
+  const { controller, api } = fixture();
+  api.debugger.sendCommand = async (target, method) => {
+    if (method === 'Page.getFrameTree') return { frameTree: { frame: { id: 'main' } } };
+    if (method === 'Accessibility.getFullAXTree') return { nodes: [
+      { role: { value: 'button' }, name: { value: 'Top' }, backendDOMNodeId: 42, frameId: 'main' },
+      { role: { value: 'button' }, name: { value: 'Inner' }, backendDOMNodeId: 43, frameId: 'child' },
+    ] };
+    if (method === 'DOM.resolveNode') return { object: { objectId: 'object' } };
+    if (method === 'Runtime.evaluate') return { result: { value: null } };
+    return {};
+  };
+  await controller.execute('claim', { tabId: 7 });
+  const snapshot = await controller.execute('snapshot', { tabId: 7 });
+  assert.equal(snapshot.elements.find(element => element.name === 'Inner').frame, true);
+  assert.equal(snapshot.elements.find(element => element.name === 'Top').frame, undefined);
+  assert.match(snapshot.frameNote, /same-origin subframe/);
+});
+
+test('the click point is translated from a same-origin frame into top-level coordinates', () => {
+  const run = new Function('window', 'document', `return (${POINT_FN}).call(this)`);
+  const marker = { setAttribute() {}, style: {}, remove() {}, textContent: '' };
+  const topDocument = {
+    elementFromPoint: () => null,
+    documentElement: { append(target) { target.appended = true; } },
+    createElement: () => marker,
+  };
+  const style = { visibility: 'visible', display: 'block', opacity: '1', paddingLeft: '0px', paddingTop: '0px' };
+  const topWindow = { getComputedStyle: () => style };
+  topWindow.top = topWindow; topWindow.document = topDocument;
+
+  const element = {
+    isConnected: true, disabled: false, tagName: 'BUTTON', type: 'button', readOnly: false, isContentEditable: false,
+    ownerDocument: { defaultView: topWindow },
+    getAttribute: () => null,
+    scrollIntoView() {},
+    getBoundingClientRect: () => ({ x: 100, y: 50, left: 100, top: 50, width: 20, height: 10 }),
+    getRootNode: () => ({}),
+    contains: node => node === element,
+  };
+  topDocument.elementFromPoint = () => element;
+  const top = run.call(element, topWindow, topDocument);
+  assert.deepEqual([top.x, top.y], [110, 55]);
+  assert.equal(top.frame, false);
+  assert.equal(marker.appended, true);
+
+  const frameElement = {
+    ownerDocument: { defaultView: topWindow },
+    getBoundingClientRect: () => ({ left: 200, top: 100 }),
+    clientLeft: 1, clientTop: 2, scrollIntoView() {},
+  };
+  const childWindow = { getComputedStyle: () => style, frameElement };
+  childWindow.top = topWindow;
+  topDocument.elementFromPoint = () => frameElement;
+  const child = { ...element, ownerDocument: { defaultView: childWindow } };
+  const inner = run.call(child, topWindow, topDocument);
+  assert.deepEqual([inner.x, inner.y], [311, 157]);
+  assert.equal(inner.frame, true);
 });
