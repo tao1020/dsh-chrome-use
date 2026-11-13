@@ -68,6 +68,8 @@ DSH_CHROME_USE_PORT=18793 DSH_CHROME_USE_NAME=Codex dsh
 
 端口 18792 留给 `scripts/fixture.mjs` 测试页。自动选择会跳过它。
 
+需要收窄权限时，用 `DSH_CHROME_USE_ALLOWED_ACTIONS` 限定这个部署能用的工具，逗号分隔短名，例如 `DSH_CHROME_USE_ALLOWED_ACTIONS=snapshot,tabs,click`。设置后没列出的工具会返回 `ACTION_NOT_ALLOWED`（fail-closed，写错名字等于禁用）；`chrome_setup`、`chrome_status`、`chrome_pair`、`chrome_doctor`、`chrome_report` 这几个诊断工具始终可用。不设置则全部可用。`chrome_status` 和 `chrome_doctor` 会显示实际允许的清单。
+
 自动模式共用同一个 `port.json`。同时运行多个 Harness 时，建议各自显式设置 `DSH_CHROME_USE_PORT`；否则端口可能随启动顺序变化，导致旧令牌失效、需要重新配对。
 
 多个 Harness 可以同时操作不同的标签页，同一个标签页仍只归一个 Harness。另一个 Harness 抢先占用时返回 `TAB_OWNED_BY_ANOTHER_HARNESS`，不会排队等待。原来的单 Harness 安装不需要改配置。
@@ -153,6 +155,8 @@ To pair a second Harness, paste its new `pairingCode` into the extension popup; 
 Port 18792 is reserved for the `scripts/fixture.mjs` test page; automatic selection skips it.
 
 Automatic mode shares one `port.json`. When running several harnesses, set `DSH_CHROME_USE_PORT` explicitly for each; otherwise the port a harness gets can depend on startup order, which invalidates the old token and forces a new pairing.
+
+To narrow the surface, set `DSH_CHROME_USE_ALLOWED_ACTIONS` to a comma-separated list of short tool names, for example `DSH_CHROME_USE_ALLOWED_ACTIONS=snapshot,tabs,click`. Tools outside the list fail with `ACTION_NOT_ALLOWED` (fail-closed: a typo disables the tool); the diagnostics `chrome_setup`, `chrome_status`, `chrome_pair`, `chrome_doctor` and `chrome_report` always stay available. Unset means every tool is available. `chrome_status` and `chrome_doctor` report the effective list.
 
 Several harnesses can work on different tabs at the same time; a tab still belongs to only one harness. When another harness got there first you get `TAB_OWNED_BY_ANOTHER_HARNESS`, and there is no queueing. Existing single-harness setups need no configuration change.
 

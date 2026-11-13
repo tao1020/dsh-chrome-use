@@ -2,6 +2,7 @@ import { BrowserController } from './controller.js';
 import { TabLeases } from './leases.js';
 import { PORT, MAX_MESSAGE, PARALLEL_TABS, MESSAGE_UNREAD_MAX, validateArgs } from './protocol.js';
 import { classifyPairingCode } from './pairing-code.js';
+import { classifyFailure } from './failures.js';
 
 // One Chrome extension can drive several harnesses at once. Each connection
 // keeps its own socket, pairing token, command map and cleanup generation. The
@@ -410,10 +411,20 @@ function connectPort(port, options = {}) {
   return ready;
 }
 
+// Every failure keeps the plain CODE: message for older plugins and adds the
+// structured parts (code, actionSent, retry, hint) for newer ones.
+function failResult(action, message, error) {
+  const text = String(error?.message ?? error).slice(0, 2000);
+  // The controller already classified failures that crossed the page boundary
+  // (it knows the action); keep that object instead of re-deriving it from text.
+  const failure = error?.failure && typeof error.failure.code === 'string' ? error.failure : classifyFailure(text, action);
+  return { error: text, failure };
+}
+
 function sendResult(client, message, response) {
   if (!isCurrent(client) || !client.connected || client.socket?.readyState !== WebSocket.OPEN) return;
   const body = JSON.stringify({ type: 'result', id: message.id, ...response });
-  client.socket.send(body.length <= MAX_MESSAGE ? body : JSON.stringify({ type: 'result', id: message.id, error: 'RESULT_TOO_LARGE' }));
+  client.socket.send(body.length <= MAX_MESSAGE ? body : JSON.stringify({ type: 'result', id: message.id, error: 'RESULT_TOO_LARGE', failure: classifyFailure('RESULT_TOO_LARGE', message.action) }));
 }
 
 // Only the count and the senders reach the bridge; message text stays in
@@ -517,7 +528,7 @@ async function handleCommand(client, message) {
     throw new Error('Invalid command deadline');
   }
   if (client.tasks.has(id)) {
-    sendResult(client, message, { error: 'DUPLICATE_COMMAND_ID' });
+    sendResult(client, message, failResult(message.action, message, 'DUPLICATE_COMMAND_ID: this command id is already running'));
     return;
   }
   const action = message.action;
@@ -525,7 +536,7 @@ async function handleCommand(client, message) {
   try {
     args = validateArgs(`chrome_${action}`, message.args);
   } catch (error) {
-    sendResult(client, message, { error: String(error.message).slice(0, 2000) });
+    sendResult(client, message, failResult(action, message, error));
     return;
   }
   // Inbox tools only touch extension storage: they need no tab, input lock,
@@ -535,35 +546,35 @@ async function handleCommand(client, message) {
       if (action === 'send_message') await sendAgentMessage(client, message, args);
       else await readAgentMessages(client, message, args);
     } catch (error) {
-      sendResult(client, message, { error: String(error.message).slice(0, 2000) });
+      sendResult(client, message, failResult(action, message, error));
     }
     return;
   }
   const tabId = Number.isSafeInteger(args.tabId) ? args.tabId : undefined;
   const lease = tabId === undefined ? undefined : leases.get(tabId);
   if (lease?.state === 'quarantined') {
-    sendResult(client, message, { error: 'TAB_LEASE_QUARANTINED: this tab did not finish native cleanup; reload the extension to clear it' });
+    sendResult(client, message, failResult(action, message, 'TAB_LEASE_QUARANTINED: this tab did not finish native cleanup; reload the extension to clear it'));
     return;
   }
   if (lease?.state === 'closing') {
-    sendResult(client, message, { error: 'TAB_LEASE_CLOSING: this tab is being cleaned up; retry after cleanup settles' });
+    sendResult(client, message, failResult(action, message, 'TAB_LEASE_CLOSING: this tab is being cleaned up; retry after cleanup settles'));
     return;
   }
   if (tabId !== undefined && busyTabs.has(tabId)) {
-    sendResult(client, message, { error: 'TAB_BUSY: another command is already running on this tab' });
+    sendResult(client, message, failResult(action, message, 'TAB_BUSY: another command is already running on this tab'));
     return;
   }
   if (action === 'claim' && tabId !== undefined) {
     try { leases.acquire(tabId, client); }
-    catch (error) { sendResult(client, message, { error: String(error.message).slice(0, 2000) }); return; }
+    catch (error) { sendResult(client, message, failResult(action, message, error)); return; }
   } else if (action === 'release' || action === 'close') {
     const owner = tabId === undefined ? undefined : leases.owner(tabId);
-    if (!owner) { sendResult(client, message, { error: 'TAB_NOT_LEASED: claim the tab first' }); return; }
-    if (owner !== client) { sendResult(client, message, { error: 'TAB_OWNED_BY_ANOTHER_HARNESS: another Harness has claimed this tab; use another tab or release it there' }); return; }
+    if (!owner) { sendResult(client, message, failResult(action, message, 'TAB_NOT_LEASED: claim the tab first')); return; }
+    if (owner !== client) { sendResult(client, message, failResult(action, message, 'TAB_OWNED_BY_ANOTHER_HARNESS: another Harness has claimed this tab; use another tab or release it there')); return; }
   } else if (tabId !== undefined) {
     const owner = leases.owner(tabId);
-    if (!owner) { sendResult(client, message, { error: 'TAB_NOT_LEASED: claim the tab first' }); return; }
-    if (owner !== client) { sendResult(client, message, { error: 'TAB_OWNED_BY_ANOTHER_HARNESS: another Harness has claimed this tab; use another tab or release it there' }); return; }
+    if (!owner) { sendResult(client, message, failResult(action, message, 'TAB_NOT_LEASED: claim the tab first')); return; }
+    if (owner !== client) { sendResult(client, message, failResult(action, message, 'TAB_OWNED_BY_ANOTHER_HARNESS: another Harness has claimed this tab; use another tab or release it there')); return; }
   }
 
   const cancellation = new AbortController();
@@ -588,7 +599,7 @@ async function handleCommand(client, message) {
       : undefined;
     response = { result: await controller.execute(action, args, cancellation.signal, options) };
   } catch (error) {
-    response = { error: String(error.message).slice(0, 2000) };
+    response = failResult(action, message, error);
   } finally {
     clearTimeout(deadline);
     try {

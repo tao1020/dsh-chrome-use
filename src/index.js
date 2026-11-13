@@ -1,12 +1,13 @@
 import { registerSettings } from './settings.js';
 import { homedir, tmpdir } from 'node:os';
 import { isAbsolute, join, sep } from 'node:path';
-import { mkdir, realpath, stat, writeFile } from 'node:fs/promises';
+import { access, constants, mkdir, realpath, stat, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { Bridge } from './bridge.js';
 import { storeUrl } from './links.js';
 import { registerChromeUseSkill } from './skill.js';
 import { TOOLS, validateArgs, parsePort } from '../extension/protocol.js';
+import { failureFromError, formatFailure } from '../extension/failures.js';
 import { buildIssueReport } from './report.js';
 import { createRequire } from 'node:module';
 
@@ -21,6 +22,25 @@ export function bridgeOptions(env, baseStateDir) {
   const options = configured ? { port: parsePort(configured), baseStateDir } : { auto: true, baseStateDir };
   const name = env?.DSH_CHROME_USE_NAME?.trim().slice(0, 40);
   return name ? { ...options, name } : options;
+}
+
+// Diagnostics stay available even in a narrowed deployment: without them a
+// harness cannot explain why a tool is missing.
+const ALWAYS_ALLOWED = new Set(['setup', 'status', 'pair', 'doctor', 'report']);
+
+// A deployment can narrow the tool set with DSH_CHROME_USE_ALLOWED_ACTIONS.
+// Unset or empty means every tool; a set value is fail-closed, so a typo
+// disables tools instead of silently enabling them.
+export function parseAllowedActions(value) {
+  const text = String(value ?? '').trim();
+  if (!text) return null;
+  const known = new Set(TOOLS.map(definition => definition.name.slice(7)));
+  const actions = new Set();
+  for (const entry of text.split(',')) {
+    const action = entry.trim().toLowerCase().replace(/^chrome_/, '');
+    if (action && known.has(action)) actions.add(action);
+  }
+  return actions;
 }
 
 // DSH accepts a JSON Schema subset. Keep full bounds in the shared validator.
@@ -88,6 +108,39 @@ export async function assertImageRoute(ctx, exec) {
   }
 }
 
+// Tool failures carry code/actionSent/retry/hint so a model can choose the next
+// step instead of only reading the message. Older extensions that send a plain
+// message still get a classification, and an existing failure is kept as-is.
+export function toToolError(error, action) {
+  const failure = failureFromError(error, action);
+  const wrapped = new Error(formatFailure(failure));
+  wrapped.failure = failure;
+  return wrapped;
+}
+
+function wrapExecute(run, name, allowed) {
+  const action = name.slice(7);
+  return async (raw, exec) => {
+    try {
+      if (allowed && !ALWAYS_ALLOWED.has(action) && !allowed.has(action)) throw new Error(`ACTION_NOT_ALLOWED: chrome_${action} is disabled by this deployment (allowed: ${[...allowed].sort().join(', ') || 'none'})`);
+      return await run(raw, exec);
+    } catch (error) { throw toToolError(error, action); }
+  };
+}
+
+export function hostDoctor({ stateDir, pluginVersion, status, allowed }) {
+  return {
+    pluginVersion,
+    stateDir,
+    connected: Boolean(status.connected),
+    port: status.port ?? null,
+    extensionVersion: status.extensionVersion ?? null,
+    claimedTabs: status.claimedTabs ?? null,
+    lastError: status.lastError ?? null,
+    allowedActions: allowed ? [...allowed].sort() : null,
+  };
+}
+
 // Tool results are rendered from the persisted value, so an inline image stays
 // visible after a session restart as long as the attachment still exists.
 export function renderOutput(name, value) {
@@ -108,6 +161,7 @@ export async function apply(ctx) {
   // An explicit port is strict. Without one, the bridge remembers the last
   // successful auto port and falls back through loopback candidates.
   const bridge = new Bridge(bridgeOptions(process.env, stateDir));
+  const allowed = parseAllowedActions(process.env.DSH_CHROME_USE_ALLOWED_ACTIONS);
   // Register startup itself with Cordis so shutdown also waits for a pending start.
   await ctx.effect(async () => {
     await bridge.start();
@@ -125,11 +179,11 @@ export async function apply(ctx) {
         schema: { type: 'object', additionalProperties: true },
         render: (_args, value) => renderOutput(definition.name, value),
       },
-      async execute(raw, exec) {
+      execute: wrapExecute(async (raw, exec) => {
         const args = validateArgs(definition.name, raw);
         exec.signal.throwIfAborted();
         if (definition.name === 'chrome_setup') return extensionSetup();
-        if (definition.name === 'chrome_status') return bridge.status();
+        if (definition.name === 'chrome_status') return { ...bridge.status(), allowedActions: allowed ? [...allowed].sort() : null };
         if (definition.name === 'chrome_pair') return bridge.pair();
         if (definition.name === 'chrome_upload') {
           if (args.path && args.paths) throw new Error('UPLOAD_TARGET: give path or paths, not both');
@@ -145,7 +199,16 @@ export async function apply(ctx) {
           const status = bridge.status();
           return buildIssueReport({ ...args, pluginVersion, extensionVersion: status.extensionVersion, connected: status.connected });
         }
+        if (definition.name === 'chrome_doctor' && args.tabId === undefined) {
+          let stateDirWritable = true;
+          try { await mkdir(stateDir, { recursive: true, mode: 0o700 }); await access(stateDir, constants.W_OK); } catch { stateDirWritable = false; }
+          const host = { ...hostDoctor({ stateDir, pluginVersion, status: bridge.status(), allowed }), stateDirWritable };
+          return { host, note: host.connected ? 'The extension is connected. Pass tabId to inspect one claimed tab.' : 'The extension is not connected: open Chrome with the extension installed and pair with chrome_pair.' };
+        }
         const result = await bridge.call(definition.name.slice(7), args, exec.agent?.id, exec.signal);
+        if (definition.name === 'chrome_doctor') {
+          return { ...result, host: hostDoctor({ stateDir, pluginVersion, status: bridge.status(), allowed }) };
+        }
         if (definition.name === 'chrome_upload' && args.paths?.length) {
           // Sizes come from the host because the extension cannot read the files.
           result.bytes = await Promise.all(args.paths.map(async path => (await stat(path)).size));
@@ -184,7 +247,7 @@ export async function apply(ctx) {
         catch (error) { throw new Error(`${error.message}; the screenshot is at ${path}`); }
         const [image] = await attachments.saveImages([{ data: bytes, mediaType: 'image/png', name: 'screenshot.png' }]);
         return { ...saved, width: image.width, height: image.height, image, note: `${kind} screenshot returned to the model and saved locally. Files remain until you remove them.` };
-      },
+      }, definition.name),
     });
   }
 }
