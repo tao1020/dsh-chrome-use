@@ -113,7 +113,7 @@ function StatusPage({ read, pair }) {
   return h('section', { style: { padding: 24 }, 'aria-label': 'dsh-chrome-use' },
     h('h2', null, 'dsh-chrome-use'),
     h('p', null, `Harness 插件版本：${packageVersion}`),
-    h('p', null, link(repositoryUrl, '喜欢这个插件？去 GitHub 点个 Star')),
+    h('p', null, link(repositoryUrl, '喜欢这个插件？点个 Star，让更多人发现它 ⭐')),
     settingsSectionOrder(connected).map(key => blocks[key]));
 }
 module.exports.inject = ['slots', 'remote'];

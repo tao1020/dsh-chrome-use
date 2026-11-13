@@ -8,7 +8,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: npm
     permissions:
-      contents: read
+      contents: write
       id-token: write
     steps:
       - uses: actions/checkout@v4
@@ -45,3 +45,22 @@ jobs:
           path: dist/*.tgz
       - name: Publish checked package
         run: npm publish ./dist/dsh-chrome-use-*.tgz --access public --registry=https://registry.npmjs.org
+      - run: npm run package
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          VERSION=$(node -p 'require("./package.json").version')
+          # Publish the exact notes written for this version; an empty section or a
+          # missing section must fail here instead of creating a blank release page.
+          awk -v heading="## [$VERSION]" '
+            index($0, heading) == 1 { found = 1; next }
+            found && index($0, "## [") == 1 { exit }
+            found { print }
+          ' CHANGELOG.md > release-notes.md
+          test -s release-notes.md
+          gh release create "release-v$VERSION" dist/*.zip dist/*.zip.sha256 \
+            --title "dsh-chrome-use $VERSION" \
+            --notes-file release-notes.md \
+            --verify-tag
