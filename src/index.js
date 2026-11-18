@@ -9,6 +9,7 @@ import { registerChromeUseSkill } from './skill.js';
 import { TOOLS, validateArgs, parsePort } from '../extension/protocol.js';
 import { failureFromError, formatFailure } from '../extension/failures.js';
 import { buildIssueReport } from './report.js';
+import { createKeepAwake } from './keep-awake.js';
 import { createRequire } from 'node:module';
 
 // The issue report quotes the version the user is actually running.
@@ -161,11 +162,12 @@ export async function apply(ctx) {
   // An explicit port is strict. Without one, the bridge remembers the last
   // successful auto port and falls back through loopback candidates.
   const bridge = new Bridge(bridgeOptions(process.env, stateDir));
+  const keepAwake = createKeepAwake();
   const allowed = parseAllowedActions(process.env.DSH_CHROME_USE_ALLOWED_ACTIONS);
   // Register startup itself with Cordis so shutdown also waits for a pending start.
   await ctx.effect(async () => {
     await bridge.start();
-    return () => bridge.stop();
+    return () => { keepAwake.stop(); bridge.stop(); };
   }, 'dsh-chrome-use');
   registerSettings(ctx, bridge);
   // Register the bundled usage guide as a runtime skill. Compositions without
@@ -182,6 +184,14 @@ export async function apply(ctx) {
       execute: wrapExecute(async (raw, exec) => {
         const args = validateArgs(definition.name, raw);
         exec.signal.throwIfAborted();
+        if (definition.name === 'chrome_keep_awake') {
+          if (args.off) {
+            const stopped = keepAwake.stop();
+            return { active: false, stopped, note: stopped ? 'Keep-awake stopped.' : 'No keep-awake assertion was active.' };
+          }
+          const started = keepAwake.start(args.minutes);
+          return { ...started, note: 'This Mac will stay awake until the timer expires, you call chrome_keep_awake with off=true, or the Harness exits. It does not unlock an already-locked screen or override a manual lock.' };
+        }
         if (definition.name === 'chrome_setup') return extensionSetup();
         if (definition.name === 'chrome_status') return { ...bridge.status(), allowedActions: allowed ? [...allowed].sort() : null };
         if (definition.name === 'chrome_pair') return bridge.pair();

@@ -6,7 +6,7 @@ test('bundled skill is valid and covers the actual tool workflow', () => {
   assert.match(chromeUseSkill.name, /^[a-z0-9]+(?:-[a-z0-9]+)*$/);
   assert.ok(chromeUseSkill.description.length > 20);
   assert.ok(chromeUseSkill.description.length <= 500);
-  for (const tool of ['chrome_status', 'chrome_pair', 'chrome_open', 'chrome_claim', 'chrome_snapshot', 'chrome_release']) {
+  for (const tool of ['chrome_status', 'chrome_pair', 'chrome_open', 'chrome_claim', 'chrome_snapshot', 'chrome_keep_awake', 'chrome_release']) {
     assert.match(chromeUseSkill.content, new RegExp(tool));
   }
   assert.match(chromeUseSkill.content, /不可信数据/);
