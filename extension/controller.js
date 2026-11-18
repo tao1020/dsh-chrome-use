@@ -49,6 +49,26 @@ const sleep = (ms, signal) => new Promise((resolve, reject) => {
   signal?.addEventListener('abort', abort, { once: true });
 });
 
+// Emulation applies to the real tab, so it must not outlive the claim. The
+// controller remembers the active overrides per tab and clears them on release.
+const DEFAULT_EMULATION = { viewport: null, colorScheme: null, reducedMotion: null, forcedColors: null, network: null, cpuThrottlingRate: 1, timezone: null, locale: null };
+// CDP throughput is bytes per second; these are the classic DevTools presets.
+const NETWORK_PRESETS = {
+  'slow-3g': { latency: 400, downloadThroughput: 400 * 1024 / 8, uploadThroughput: 400 * 1024 / 8 },
+  'fast-3g': { latency: 150, downloadThroughput: 1.6 * 1024 * 1024 / 8, uploadThroughput: 750 * 1024 / 8 },
+};
+const mediaFeatures = emulation => [
+  emulation.colorScheme && { name: 'prefers-color-scheme', value: emulation.colorScheme },
+  emulation.reducedMotion && { name: 'prefers-reduced-motion', value: emulation.reducedMotion },
+  emulation.forcedColors && { name: 'forced-colors', value: emulation.forcedColors },
+].filter(Boolean);
+const networkConditions = network => {
+  if (!network) return { offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1 };
+  if (network === 'offline') return { offline: true, latency: 0, downloadThroughput: 0, uploadThroughput: 0 };
+  const preset = NETWORK_PRESETS[network];
+  return { offline: false, latency: preset.latency, downloadThroughput: preset.downloadThroughput, uploadThroughput: preset.uploadThroughput };
+};
+
 const MODIFIERS = { alt: 1, ctrl: 2, control: 2, meta: 4, cmd: 4, command: 4, shift: 8 };
 const NAMED_KEYS = {
   enter: ['Enter', 'Enter', 13, '\r'], tab: ['Tab', 'Tab', 9], escape: ['Escape', 'Escape', 27], esc: ['Escape', 'Escape', 27],
@@ -211,7 +231,10 @@ export class BrowserController {
   }
 
   async detachTab(tabId) {
-    clearTimeout(this.attached.get(tabId)?.chooserTimer);
+    const state = this.attached.get(tabId);
+    clearTimeout(state?.chooserTimer);
+    // Release must restore the user's tab even when the caller forgets chrome_emulate reset.
+    if (state?.emulation) await this.clearEmulation(tabId, AbortSignal.timeout(1500), true);
     const attached = this.attached.delete(tabId);
     const cleanup = attached
       ? this.trackCleanup(tabId, this.api.debugger.detach({ tabId }))
@@ -301,7 +324,7 @@ export class BrowserController {
       this.trackCleanup(tabId, attachment.then(() => this.api.debugger.detach({ tabId }), () => {}));
       throw attachFailure(error, tabId, currentUrl, 'attach');
     }
-    this.attached.set(tabId, { refs: new Map(), revision: 0, logs: [], logSeq: 0, requests: [], dialog: null, chooser: null, chooserTimer: null, loadResolve: null, lastNetworkActivity: Date.now(), networkInFlight: 0, networkRequests: new Map(), mainFrameId: null, actions: [], actionSeq: 0, challenge: null });
+    this.attached.set(tabId, { refs: new Map(), revision: 0, logs: [], logSeq: 0, requests: [], dialog: null, chooser: null, chooserTimer: null, loadResolve: null, lastNetworkActivity: Date.now(), networkInFlight: 0, networkRequests: new Map(), mainFrameId: null, actions: [], actionSeq: 0, challenge: null, emulation: null });
     let stage = 'attach';
     try {
       for (const domain of ['Page', 'DOM', 'Accessibility', 'Runtime', 'Network']) {
@@ -553,6 +576,84 @@ export class BrowserController {
     }
   }
 
+  // Reset every CDP override this tab may carry. Release uses best effort: a
+  // dead debugger session must not block detaching or hang the caller.
+  async clearEmulation(tabId, signal, bestEffort = false) {
+    const methods = [
+      ['Emulation.clearDeviceMetricsOverride', {}],
+      ['Emulation.setEmulatedMedia', { features: [] }],
+      ['Network.emulateNetworkConditions', { offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1 }],
+      ['Emulation.setCPUThrottlingRate', { rate: 1 }],
+      ['Emulation.setTimezoneOverride', { timezone: '' }],
+      ['Emulation.setLocaleOverride', { locale: '' }],
+    ];
+    const calls = methods.map(([method, params]) => this.command(tabId, method, params, signal));
+    if (bestEffort) await Promise.allSettled(calls);
+    else await Promise.all(calls);
+  }
+
+  async emulate(tabId, args, cdp, signal) {
+    const state = this.attached.get(tabId);
+    if (args.reset) {
+      try { await this.clearEmulation(tabId, signal); }
+      catch (error) {
+        if (signal.aborted) throw error;
+        throw new Error(`EMULATION_FAILED: ${clip(error.message ?? error, 300)}`);
+      }
+      state.emulation = null;
+      return { tabId, cleared: true, emulation: null, note: 'All emulation overrides are cleared; the tab is back to the browser default.' };
+    }
+    const current = state.emulation ?? DEFAULT_EMULATION;
+    const changingViewport = args.width !== undefined || args.height !== undefined;
+    if ((args.width === undefined) !== (args.height === undefined)) throw new Error('EMULATE_ARGS: give width and height together');
+    const wantsViewportChange = changingViewport || args.deviceScaleFactor !== undefined || args.mobile !== undefined;
+    if (wantsViewportChange && !changingViewport && !current.viewport) throw new Error('EMULATE_ARGS: give width and height the first time you emulate a viewport');
+    if (!wantsViewportChange && args.colorScheme === undefined && args.reducedMotion === undefined && args.forcedColors === undefined && args.network === undefined && args.cpuThrottlingRate === undefined && args.timezone === undefined && args.locale === undefined) {
+      throw new Error('EMULATE_ARGS: give at least one emulation setting or reset=true');
+    }
+    let viewport = current.viewport;
+    if (changingViewport) viewport = { width: args.width, height: args.height, deviceScaleFactor: args.deviceScaleFactor ?? current.viewport?.deviceScaleFactor ?? 1, mobile: args.mobile ?? current.viewport?.mobile ?? false };
+    else if (viewport && (args.deviceScaleFactor !== undefined || args.mobile !== undefined)) viewport = { ...viewport, ...(args.deviceScaleFactor !== undefined ? { deviceScaleFactor: args.deviceScaleFactor } : {}), ...(args.mobile !== undefined ? { mobile: args.mobile } : {}) };
+    const next = {
+      viewport,
+      colorScheme: args.colorScheme ?? current.colorScheme,
+      reducedMotion: args.reducedMotion ?? current.reducedMotion,
+      forcedColors: args.forcedColors ?? current.forcedColors,
+      network: args.network === undefined ? current.network : (args.network === 'online' ? null : args.network),
+      cpuThrottlingRate: args.cpuThrottlingRate ?? current.cpuThrottlingRate,
+      timezone: args.timezone === undefined ? current.timezone : (args.timezone || null),
+      locale: args.locale === undefined ? current.locale : (args.locale || null),
+    };
+    try {
+      if (next.viewport && wantsViewportChange) await cdp('Emulation.setDeviceMetricsOverride', {
+        width: next.viewport.width,
+        height: next.viewport.height,
+        deviceScaleFactor: next.viewport.deviceScaleFactor,
+        mobile: next.viewport.mobile,
+        screenWidth: next.viewport.width,
+        screenHeight: next.viewport.height,
+        ...(next.viewport.mobile ? { screenOrientation: next.viewport.width >= next.viewport.height ? { type: 'landscapePrimary', angle: 90 } : { type: 'portraitPrimary', angle: 0 } } : {}),
+      });
+      await cdp('Emulation.setEmulatedMedia', { features: mediaFeatures(next) });
+      await cdp('Network.emulateNetworkConditions', networkConditions(next.network));
+      await cdp('Emulation.setCPUThrottlingRate', { rate: next.cpuThrottlingRate });
+      await cdp('Emulation.setTimezoneOverride', { timezone: next.timezone ?? '' });
+      await cdp('Emulation.setLocaleOverride', { locale: next.locale ?? '' });
+    } catch (error) {
+      // A half-applied set is worse than none: clear what was applied, even on cancel.
+      await this.clearEmulation(tabId, AbortSignal.timeout(1500), true);
+      state.emulation = null;
+      if (signal.aborted) throw error;
+      throw new Error(`EMULATION_FAILED: ${clip(error.message ?? error, 300)}`);
+    }
+    state.emulation = next;
+    return {
+      tabId,
+      emulation: { ...next, viewport: next.viewport ? { ...next.viewport } : null },
+      note: 'Screenshot, layout and page scripts use these settings now. Reload with chrome_history action=reload if the page only reads a setting at load time. Overrides stay until chrome_emulate reset=true or chrome_release.',
+    };
+  }
+
   // One condition evaluation shared by chrome_wait and chrome_assert.
   async condition(tabId, args, signal, cdp, objectId) {
     if (args.urlContains) {
@@ -705,6 +806,7 @@ export class BrowserController {
         tabId, url: clip(tab.url, 4096), title: clip(tab.title, 300), attached: true,
         visibility: page?.visibility ?? null, readyState: page?.readyState ?? null,
         dialog: state.dialog ?? null, challenge,
+        emulation: state.emulation ? { ...state.emulation, viewport: state.emulation.viewport ? { ...state.emulation.viewport } : null } : null,
         elements: state.refs.size, revision: state.revision, mainFrameId: state.mainFrameId,
         actions: state.actions.length, logs: state.logs.length,
         pageErrors: state.logs.filter(entry => entry.kind === 'exception').length,
@@ -761,6 +863,7 @@ export class BrowserController {
       const tab = await bounded(this.api.tabs.get(tabId), signal, 'tabs.get');
       return { tabId, action: args.action, url: clip(tab.url, 4096), title: clip(tab.title, 300), loaded: await loaded, note: 'Take a fresh snapshot; references from before the navigation are stale.' };
     }
+    if (action === 'emulate') return this.emulate(tabId, args, cdp, signal);
     if (action === 'snapshot') {
       const state = this.attached.get(tabId);
       const tab = await bounded(this.api.tabs.get(tabId), signal, 'tabs.get');

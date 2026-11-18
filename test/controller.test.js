@@ -81,6 +81,79 @@ test('schemas reject unknown fields, invalid URL schemes and boundaries', () => 
   assert.doesNotThrow(() => validateArgs('chrome_screenshot', { tabId: 1, fullPage: true }));
   assert.doesNotThrow(() => validateArgs('chrome_pdf', { tabId: 1, landscape: true }));
   assert.doesNotThrow(() => validateArgs('chrome_activate', { tabId: 1 }));
+  assert.doesNotThrow(() => validateArgs('chrome_emulate', { tabId: 1, width: 390, height: 844, mobile: true, deviceScaleFactor: 3 }));
+  assert.doesNotThrow(() => validateArgs('chrome_emulate', { tabId: 1, colorScheme: 'dark', network: 'offline', reset: true }));
+  assert.doesNotThrow(() => validateArgs('chrome_emulate', { tabId: 1, timezone: '', locale: '' }));
+  assert.throws(() => validateArgs('chrome_emulate', { tabId: 1, colorScheme: 'sepia' }), /INVALID_ARGUMENT/);
+  assert.throws(() => validateArgs('chrome_emulate', { tabId: 1, cpuThrottlingRate: 21 }), /out of range/);
+  assert.throws(() => validateArgs('chrome_emulate', { tabId: 1, width: 100, height: 100 }), /out of range/);
+});
+test('emulation applies viewport, media, network, CPU, timezone and locale', async () => {
+  const { controller, calls } = fixture();
+  await controller.execute('claim', { tabId: 7 });
+  const result = await controller.execute('emulate', { tabId: 7, width: 390, height: 844, mobile: true, deviceScaleFactor: 3, colorScheme: 'dark', reducedMotion: 'reduce', forcedColors: 'active', network: 'slow-3g', cpuThrottlingRate: 4, timezone: 'Asia/Tokyo', locale: 'ja-JP' });
+  assert.deepEqual(result.emulation.viewport, { width: 390, height: 844, deviceScaleFactor: 3, mobile: true });
+  const metrics = calls.find(([method]) => method === 'Emulation.setDeviceMetricsOverride');
+  assert.equal(metrics[1].width, 390);
+  assert.equal(metrics[1].mobile, true);
+  assert.deepEqual(metrics[1].screenOrientation, { type: 'portraitPrimary', angle: 0 });
+  const media = calls.find(([method]) => method === 'Emulation.setEmulatedMedia');
+  assert.deepEqual(media[1].features, [
+    { name: 'prefers-color-scheme', value: 'dark' },
+    { name: 'prefers-reduced-motion', value: 'reduce' },
+    { name: 'forced-colors', value: 'active' },
+  ]);
+  const network = calls.find(([method]) => method === 'Network.emulateNetworkConditions');
+  assert.equal(network[1].latency, 400);
+  assert.equal(network[1].offline, false);
+  assert.ok(calls.some(([method, params]) => method === 'Emulation.setCPUThrottlingRate' && params.rate === 4));
+  assert.ok(calls.some(([method, params]) => method === 'Emulation.setTimezoneOverride' && params.timezone === 'Asia/Tokyo'));
+  assert.ok(calls.some(([method, params]) => method === 'Emulation.setLocaleOverride' && params.locale === 'ja-JP'));
+});
+test('emulation accumulates per tab, is reported by doctor and cleared on release', async () => {
+  const { controller, calls } = fixture();
+  await controller.execute('claim', { tabId: 7 });
+  await controller.execute('emulate', { tabId: 7, width: 1280, height: 800 });
+  await controller.execute('emulate', { tabId: 7, colorScheme: 'dark' });
+  assert.equal(controller.attached.get(7).emulation.viewport.width, 1280);
+  assert.equal(controller.attached.get(7).emulation.colorScheme, 'dark');
+  assert.equal(calls.filter(([method]) => method === 'Emulation.setDeviceMetricsOverride').length, 1);
+  const doctor = await controller.execute('doctor', { tabId: 7 });
+  assert.equal(doctor.emulation.colorScheme, 'dark');
+  await controller.execute('release', { tabId: 7 });
+  assert.ok(calls.some(([method]) => method === 'Emulation.clearDeviceMetricsOverride'));
+  assert.equal(controller.attached.has(7), false);
+});
+test('emulation reset clears every override', async () => {
+  const { controller, calls } = fixture();
+  await controller.execute('claim', { tabId: 7 });
+  await controller.execute('emulate', { tabId: 7, width: 390, height: 844, network: 'offline' });
+  const result = await controller.execute('emulate', { tabId: 7, reset: true });
+  assert.equal(result.cleared, true);
+  assert.equal(controller.attached.get(7).emulation, null);
+  assert.ok(calls.some(([method]) => method === 'Emulation.clearDeviceMetricsOverride'));
+  const network = calls.filter(([method]) => method === 'Network.emulateNetworkConditions').at(-1);
+  assert.equal(network[1].offline, false);
+  assert.equal(network[1].downloadThroughput, -1);
+});
+test('emulation rejects a half viewport and a viewport-less first call', async () => {
+  const { controller } = fixture();
+  await controller.execute('claim', { tabId: 7 });
+  await assert.rejects(controller.execute('emulate', { tabId: 7, width: 390 }), /EMULATE_ARGS/);
+  await assert.rejects(controller.execute('emulate', { tabId: 7, mobile: true }), /EMULATE_ARGS/);
+  await assert.rejects(controller.execute('emulate', { tabId: 7 }), /EMULATE_ARGS/);
+  await assert.doesNotReject(controller.execute('emulate', { tabId: 7, width: 390, height: 844 }));
+});
+test('a rejected emulation call clears partial overrides and reports EMULATION_FAILED', async () => {
+  const { controller, api } = fixture();
+  await controller.execute('claim', { tabId: 7 });
+  const original = api.debugger.sendCommand;
+  api.debugger.sendCommand = async (target, method, params) => {
+    if (method === 'Emulation.setCPUThrottlingRate') throw new Error('method not found');
+    return original(target, method, params);
+  };
+  await assert.rejects(controller.execute('emulate', { tabId: 7, width: 400, height: 400, cpuThrottlingRate: 2 }), /EMULATION_FAILED/);
+  assert.equal(controller.attached.get(7).emulation, null);
 });
 test('a frozen argument object is validated without being mutated', () => {
   const frozen = Object.freeze({ tabId: '183950055', expression: '1' });

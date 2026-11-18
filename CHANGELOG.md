@@ -3,6 +3,18 @@
 版本号遵循语义化版本。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 扩展版本和 Harness 插件版本始终一起发布，数字保持一致。
 
+## [0.11.0] - 2026-11-18
+
+### 新增
+
+- chrome_emulate：不改 DOM，只改当前标签页的渲染条件。支持视口尺寸和 mobile（width/height 必须一起给）、deviceScaleFactor、colorScheme（light/dark）、reducedMotion、forcedColors、network（offline/slow-3g/fast-3g/online）、cpuThrottlingRate（1-20）、timezone 和 locale。用于响应式、深色模式、弱网/离线、慢设备和本地化检查；布局、媒体查询、页面脚本和截图都会跟着变。
+- 每次调用只更新传入的字段，其余保持；chrome_emulate reset=true 清除全部。覆盖只在当前占用期间有效，chrome_release 或断开时会自动恢复，避免把用户的标签页留在手机尺寸或离线下。chrome_doctor 会显示当前覆盖。
+- 部分 CDP 调用失败时会先清掉已经生效的覆盖，再返回 EMULATION_FAILED，避免留下半套设置。部分页面只在加载时读取设置，需要 chrome_history action=reload 后再生效。
+
+### 文档
+
+- 运行期 skill 指南补充 chrome_emulate 的用法、reset 和重载说明。
+
 ## [0.10.0] - 2026-11-13
 
 ### 新增
