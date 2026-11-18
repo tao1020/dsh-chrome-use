@@ -28,6 +28,12 @@
       <p class="help" id="foreground-on">开：操作时会把浏览器窗口抬到最前，会抢走你正在用的应用的焦点。</p>
       <p class="help" id="foreground-off">关：只在浏览器窗口内切换标签页，不抢焦点；窗口被最小化或完全遮挡时，操作会返回 PAGE_HIDDEN。改完立即生效，不用重新连接。</p>
     </section>
+    <section aria-label="关闭行为">
+      <h2>关闭行为</h2>
+      <label class="mode-row"><input type="checkbox" id="force-close" checked> <span>关闭时不再确认</span></label>
+      <p class="help">开：Agent 关闭标签页时直接关掉，不再弹出网页的“离开此网站？”提示，页面未保存的修改会丢弃。</p>
+      <p class="help">关：保留这个提示，由你选择离开或取消。改完立即生效。</p>
+    </section>
     <button id="disconnect" class="secondary">断开全部连接</button>
   </main>
   <footer>

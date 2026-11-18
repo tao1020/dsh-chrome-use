@@ -37,6 +37,14 @@ test('popup offers the foreground-mode switch with one line per mode', async () 
   assert.match(html, /不抢焦点/);
 });
 
+test('popup offers a checked close-without-confirmation switch', async () => {
+  const html = await readFile(new URL('../extension/popup.html', import.meta.url), 'utf8');
+  assert.match(html, /<input type="checkbox" id="force-close" checked>/);
+  assert.match(html, /关闭时不再确认/);
+  assert.match(html, /不再弹出网页的“离开此网站？”提示/);
+  assert.match(html, /由你选择离开或取消/);
+});
+
 test('popup links to the pairing help right below the code input', async () => {
   const popup = await readFile(new URL('../extension/popup.html', import.meta.url), 'utf8');
   const help = popup.indexOf('使用帮助（Help');

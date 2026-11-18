@@ -3,6 +3,18 @@
 版本号遵循语义化版本。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 扩展版本和 Harness 插件版本始终一起发布，数字保持一致。
 
+## [0.14.0] - 2026-11-18
+
+### 新增
+
+- chrome_close 默认直接关闭标签页，不显示网页的 beforeunload 提示（例如“离开此网站？系统可能不会保存您所做的更改。”）。关闭时优先用 Target.closeTarget，不触发页面的离开确认；目标不可用时回退到 tabs.remove 并自动确认。传 force=false 可以让单个调用保留手动确认；返回值增加 forcedBeforeUnload，表示这次是否启用了强制关闭。
+- chrome_cleanup 和 WebSocket 断开时的自动清理也使用同一规则；如果标签页已经 release，会短暂 attach 一次以便接收提示，再关闭。
+- 扩展弹窗增加“关闭时不再确认”，默认勾选。勾选时 Agent 直接关闭，取消勾选后保留页面提示，由用户选择离开或取消；修改立即生效，无需重新连接。该设置只影响 Agent 主动关闭，不影响用户自己点关闭。
+
+### 文档
+
+- 运行期 skill 指南补充关闭时的默认行为、force=false 和扩展弹窗开关。
+
 ## [0.13.0] - 2026-11-18
 
 ### 新增

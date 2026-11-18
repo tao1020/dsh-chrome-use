@@ -272,7 +272,15 @@ export class BrowserController {
     }
     if (method === 'Network.loadingFinished' || method === 'Network.loadingFailed') { state.networkRequests.delete(params.requestId); state.networkInFlight = state.networkRequests.size; }
     if (method === 'Page.loadEventFired' && state.loadResolve) { const resolve = state.loadResolve; state.loadResolve = null; resolve(true); }
-    if (method === 'Page.javascriptDialogOpening') state.dialog = { type: params.type, message: clip(params.message, 2000), defaultPrompt: clip(params.defaultPrompt, 1000) };
+    if (method === 'Page.javascriptDialogOpening') {
+      state.dialog = { type: params.type, message: clip(params.message, 2000), defaultPrompt: clip(params.defaultPrompt, 1000) };
+      // chrome_close defaults to force=true: a beforeunload guard must not leave
+      // the tab wedged behind a native prompt. Only this exact dialog type is
+      // auto-accepted; alert/confirm/prompt still belong to the caller.
+      if (params.type === 'beforeunload' && state.acceptBeforeUnload) {
+        this.api.debugger.sendCommand({ tabId }, 'Page.handleJavaScriptDialog', { accept: true }).catch(() => {});
+      }
+    }
     if (method === 'Page.javascriptDialogClosed') state.dialog = null;
     if (method === 'Page.fileChooserOpened') {
       clearTimeout(state.chooserTimer);
@@ -324,7 +332,7 @@ export class BrowserController {
       this.trackCleanup(tabId, attachment.then(() => this.api.debugger.detach({ tabId }), () => {}));
       throw attachFailure(error, tabId, currentUrl, 'attach');
     }
-    this.attached.set(tabId, { refs: new Map(), revision: 0, logs: [], logSeq: 0, requests: [], dialog: null, chooser: null, chooserTimer: null, loadResolve: null, lastNetworkActivity: Date.now(), networkInFlight: 0, networkRequests: new Map(), mainFrameId: null, actions: [], actionSeq: 0, challenge: null, emulation: null });
+    this.attached.set(tabId, { refs: new Map(), revision: 0, logs: [], logSeq: 0, requests: [], dialog: null, chooser: null, chooserTimer: null, loadResolve: null, lastNetworkActivity: Date.now(), networkInFlight: 0, networkRequests: new Map(), mainFrameId: null, actions: [], actionSeq: 0, challenge: null, emulation: null, acceptBeforeUnload: false });
     let stage = 'attach';
     try {
       for (const domain of ['Page', 'DOM', 'Accessibility', 'Runtime', 'Network']) {
@@ -704,6 +712,48 @@ export class BrowserController {
     }
   }
 
+  async closeTab(tabId, signal, { force = true, attachIfNeeded = false } = {}) {
+    if (force && attachIfNeeded && !this.attached.has(tabId)) {
+      // A released tab has no debugger session, so a beforeunload event would
+      // be invisible. Attach briefly just for the close; failure falls back to
+      // a plain remove because an unattachable page cannot show that guard.
+      await this.attach(tabId, signal).catch(() => {});
+    }
+    const state = this.attached.get(tabId);
+    if (state) {
+      state.acceptBeforeUnload = force;
+      // The dialog may already be open before this call; accept it directly
+      // instead of waiting for another Page.javascriptDialogOpening event.
+      if (force && state.dialog?.type === 'beforeunload') {
+        await this.api.debugger.sendCommand({ tabId }, 'Page.handleJavaScriptDialog', { accept: true }).catch(() => {});
+      }
+    }
+    let closedByTarget = false;
+    if (force && state) {
+      // Target.closeTarget closes the target without running beforeunload, so
+      // the page never draws the dialog. Fall back to tabs.remove for a target
+      // that cannot be found or closed.
+      try {
+        const info = await this.command(tabId, 'Target.getTargetInfo', {}, signal);
+        const targetId = info?.targetInfo?.targetId;
+        if (targetId) {
+          await this.command(tabId, 'Target.closeTarget', { targetId }, signal);
+          closedByTarget = true;
+        }
+      } catch {
+        closedByTarget = false;
+      }
+    }
+    try {
+      if (!closedByTarget) await bounded(this.api.tabs.remove(tabId), signal, 'tabs.remove');
+    } finally {
+      // Removing the tab also drops the debugger session. Clearing state here
+      // keeps a failed remove from leaving a claim pointing at a closed tab.
+      this.attached.delete(tabId);
+    }
+    return { tabId, closed: true, forcedBeforeUnload: Boolean(force && state) };
+  }
+
   async perform(action, raw, signal = new AbortController().signal, options = {}) {
     const args = validateArgs(`chrome_${action}`, raw);
     signal.throwIfAborted();
@@ -753,13 +803,7 @@ export class BrowserController {
       await this.attach(tabId, signal);
       return { tabId, attached: true };
     }
-    if (action === 'close') {
-      // Removing the tab also drops the debugger session; clean local state first
-      // so a failed remove cannot leave a claim pointing at a closed tab.
-      this.attached.delete(tabId);
-      await bounded(this.api.tabs.remove(tabId), signal, 'tabs.remove');
-      return { tabId, closed: true };
-    }
+    if (action === 'close') return this.closeTab(tabId, signal, { force: args.force !== false, attachIfNeeded: true });
     if (action === 'downloads') {
       if (typeof this.api.downloads?.search !== 'function') throw new Error('DOWNLOADS_UNSUPPORTED: this Chrome exposes no downloads API; update the extension and grant the downloads permission');
       const limit = args.limit ?? 10;
