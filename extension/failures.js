@@ -112,6 +112,8 @@ const HINTS = {
   DRAG_OUT_OF_VIEW: { retry: 'inspect', hint: 'Scroll so both endpoints are visible, then take a fresh snapshot.' },
   DRAG_PLAN_FAILED: { retry: 'inspect' },
   FIND_QUERY: { retry: 'fix-args' },
+  EMULATE_ARGS: { retry: 'fix-args', hint: 'Give width and height together, start a viewport with both, or call reset=true to clear the overrides.' },
+  EMULATION_FAILED: { retry: 'inspect', hint: 'Chrome rejected the emulation call; the previous overrides were cleared. Read the tab state before retrying.' },
   REQUEST_NOT_FOUND: { retry: 'none', hint: 'Only the latest 200 requests are kept; list them again.' },
   NETWORK_BODY_UNAVAILABLE: { retry: 'none', hint: 'Chrome may have evicted the body; capture it while the request is fresh.' },
   JAVASCRIPT_ERROR: { retry: 'fix-args', hint: 'The evaluated expression threw; fix the expression.' },
