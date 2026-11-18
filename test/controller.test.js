@@ -81,6 +81,9 @@ test('schemas reject unknown fields, invalid URL schemes and boundaries', () => 
   assert.doesNotThrow(() => validateArgs('chrome_screenshot', { tabId: 1, fullPage: true }));
   assert.doesNotThrow(() => validateArgs('chrome_pdf', { tabId: 1, landscape: true }));
   assert.doesNotThrow(() => validateArgs('chrome_activate', { tabId: 1 }));
+  assert.doesNotThrow(() => validateArgs('chrome_close', { tabId: 1 }));
+  assert.doesNotThrow(() => validateArgs('chrome_close', { tabId: 1, force: false }));
+  assert.throws(() => validateArgs('chrome_close', { tabId: 1, force: 'yes' }), /INVALID_ARGUMENT/);
   assert.doesNotThrow(() => validateArgs('chrome_emulate', { tabId: 1, width: 390, height: 844, mobile: true, deviceScaleFactor: 3 }));
   assert.doesNotThrow(() => validateArgs('chrome_emulate', { tabId: 1, colorScheme: 'dark', network: 'offline', reset: true }));
   assert.doesNotThrow(() => validateArgs('chrome_emulate', { tabId: 1, timezone: '', locale: '' }));
@@ -266,9 +269,43 @@ test('closing a tab removes it and forgets its debugger state', async () => {
   const { controller, calls } = fixture();
   await controller.execute('claim', { tabId: 7 });
   assert.equal(controller.attached.has(7), true);
-  assert.deepEqual(await controller.execute('close', { tabId: 7 }), { tabId: 7, closed: true });
+  assert.deepEqual(await controller.execute('close', { tabId: 7 }), { tabId: 7, closed: true, forcedBeforeUnload: true });
   assert.deepEqual(calls.find(([method]) => method === 'tabs.remove'), ['tabs.remove', 7]);
   assert.equal(controller.attached.has(7), false);
+});
+test('close skips the beforeunload dialog by closing the target directly', async () => {
+  const { controller, calls } = fixture({
+    'Target.getTargetInfo': () => ({ targetInfo: { targetId: 'target-7' } }),
+  });
+  await controller.execute('claim', { tabId: 7 });
+  const result = await controller.execute('close', { tabId: 7 });
+  assert.equal(result.forcedBeforeUnload, true);
+  assert.ok(calls.some(([method, params]) => method === 'Target.closeTarget' && params.targetId === 'target-7'));
+  assert.ok(!calls.some(([method]) => method === 'tabs.remove'));
+});
+test('close auto-accepts a beforeunload prompt by default', async () => {
+  const { controller, api, calls, listeners } = fixture();
+  await controller.execute('claim', { tabId: 7 });
+  api.tabs.remove = async id => {
+    calls.push(['tabs.remove', id]);
+    listeners.event({ tabId: id }, 'Page.javascriptDialogOpening', { type: 'beforeunload', message: 'Leave?' });
+  };
+  calls.length = 0;
+  const result = await controller.execute('close', { tabId: 7 });
+  assert.equal(result.forcedBeforeUnload, true);
+  assert.ok(calls.some(([method, params]) => method === 'Page.handleJavaScriptDialog' && params.accept === true));
+});
+test('close with force=false leaves a beforeunload prompt to the user', async () => {
+  const { controller, api, calls, listeners } = fixture();
+  await controller.execute('claim', { tabId: 7 });
+  api.tabs.remove = async id => {
+    calls.push(['tabs.remove', id]);
+    listeners.event({ tabId: id }, 'Page.javascriptDialogOpening', { type: 'beforeunload', message: 'Leave?' });
+  };
+  calls.length = 0;
+  const result = await controller.execute('close', { tabId: 7, force: false });
+  assert.equal(result.forcedBeforeUnload, false);
+  assert.ok(!calls.some(([method]) => method === 'Page.handleJavaScriptDialog'));
 });
 test('snapshot omits input values and stale references cannot click after navigation', async () => {
   const { controller, listeners, calls } = fixture();

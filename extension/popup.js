@@ -83,6 +83,12 @@ chrome.storage.local.get('foregroundMode').then(
   () => {}, // Keep the default (foreground on) when settings cannot be read.
 );
 foreground.addEventListener('change', () => { chrome.storage.local.set({ foregroundMode: foreground.checked }); });
+const forceClose = $('force-close');
+chrome.storage.local.get('forceCloseBeforeUnload').then(
+  ({ forceCloseBeforeUnload }) => { forceClose.checked = forceCloseBeforeUnload !== false; },
+  () => {}, // Keep the default (forced close on) when settings cannot be read.
+);
+forceClose.addEventListener('change', () => { chrome.storage.local.set({ forceCloseBeforeUnload: forceClose.checked }); });
 $('pair-form').addEventListener('submit', async event => {
   event.preventDefault();
   const result = await act('connect', { code: $('code').value });

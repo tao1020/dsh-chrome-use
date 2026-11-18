@@ -42,7 +42,7 @@ export const chromeUseSkill = {
 11. 滚动到某个元素用 chrome_scroll_to（ref 或 selector）；截图用 chrome_screenshot，默认视口，fullPage=true 截整页，给 ref 或 selector 截单个元素，inline=true 会把图片一并返回给模型；导出 PDF 用 chrome_pdf。文件保存在本机；图片能否被理解取决于模型能力，inline 被拒绝时不要反复重试，改回不带 inline 的截图，拿本地路径。
 12. 点击下载链接后用 chrome_downloads（wait=true）确认是否保存成功；它只读取 Chrome 的下载记录，不修改文件。
 13. 预计任务会持续几分钟、用户可能要离开时，先调用 chrome_keep_awake（默认 30 分钟，最多 480 分钟），让 Mac 不因空闲息屏或空闲锁屏而中断；再调用会续期，off=true 提前停止。它只适用于 macOS，不能解锁已经锁定的屏幕，也不能覆盖手动锁屏、合盖或公司电源策略。任务结束或不再需要时传 off=true。
-14. 结束时用 chrome_release 释放页面；本会话用 chrome_open 打开的页面用 chrome_cleanup 批量关闭，避免留下几十个标签页。dryRun=true 先看会关哪些，keep=[tabId] 保留指定的页面。它只关本会话自己打开的页面，不会关用户自己开的页面、只是 claim 的页面或其他会话的页面；WebSocket 断开时扩展也会自动做同样的清理。单个页面也可以直接用 chrome_close。
+14. 结束时用 chrome_release 释放页面；本会话用 chrome_open 打开的页面用 chrome_cleanup 批量关闭，避免留下几十个标签页。dryRun=true 先看会关哪些，keep=[tabId] 保留指定的页面。它只关本会话自己打开的页面，不会关用户自己开的页面、只是 claim 的页面或其他会话的页面；WebSocket 断开时扩展也会自动做同样的清理。单个页面也可以直接用 chrome_close。Agent 关闭默认会自动确认网页的 beforeunload（如“离开此网站？”），不再等你手点；需要保留这个提示时传 force=false，或在扩展弹窗取消“关闭时不再确认”。
 
 ## 出错时
 

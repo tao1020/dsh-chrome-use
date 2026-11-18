@@ -233,11 +233,24 @@ async function saveToken(client, port, token, name) {
   });
 }
 
+// Default on: an agent-initiated close should not leave the user stuck behind
+// a native beforeunload prompt. The popup can turn this off for the whole
+// extension; a per-call force=false still overrides the setting.
+async function forceCloseBeforeUnload() {
+  try {
+    const stored = await chrome.storage.local.get('forceCloseBeforeUnload');
+    return stored.forceCloseBeforeUnload !== false;
+  } catch {
+    return true;
+  }
+}
+
 async function drainClient(client, { closeOpened = false } = {}) {
   if (client.drain) return client.drain;
   client.drain = (async () => {
     // Block commands as soon as cleanup starts, before the first await.
     for (const tabId of leases.ownedBy(client)) leases.beginClose(tabId, client);
+    const forceClose = closeOpened ? await forceCloseBeforeUnload() : false;
     const tasks = [...client.tasks.values()];
     for (const task of tasks) task.cancellation.abort();
     await Promise.allSettled(tasks.map(task => task.done));
@@ -251,6 +264,21 @@ async function drainClient(client, { closeOpened = false } = {}) {
         if (leases.owner(tabId) !== client) continue;
         if (leases.get(tabId)?.state === 'quarantined') continue;
         const wasOpened = closeOpened && client.opened.has(tabId);
+        if (wasOpened) {
+          // Close before detaching so the beforeunload event is still visible.
+          try { await controller.closeTab(tabId, undefined, { force: forceClose, attachIfNeeded: true }); }
+          catch (error) {
+            const message = String(error?.message ?? error).slice(0, 2000);
+            if (!/No tab with id|Invalid tab ID/i.test(message)) {
+              client.lastError = message;
+              lastError = message;
+              portErrors.set(client.port, message);
+            }
+          }
+          client.opened.delete(tabId);
+          if (leases.owner(tabId) === client) leases.release(tabId, client);
+          continue;
+        }
         try {
           await controller.detachTab(tabId);
         } catch (error) {
@@ -261,20 +289,6 @@ async function drainClient(client, { closeOpened = false } = {}) {
             portErrors.set(client.port, client.lastError);
           }
           continue;
-        }
-        // Detach releases the lease through the controller callback, so remove
-        // the tab only after native cleanup; a failed remove leaves it open.
-        if (wasOpened) {
-          try { await chrome.tabs.remove(tabId); }
-          catch (error) {
-            const message = String(error?.message ?? error).slice(0, 2000);
-            if (!/No tab with id|Invalid tab ID/i.test(message)) {
-              client.lastError = message;
-              lastError = message;
-              portErrors.set(client.port, message);
-            }
-          }
-          client.opened.delete(tabId);
         }
         // A task or a late callback may have released/reassigned the lease while
         // native detach was running; do not clean up someone else's tab.
@@ -289,10 +303,9 @@ async function drainClient(client, { closeOpened = false } = {}) {
       for (const tabId of [...client.opened]) {
         const owner = leases.owner(tabId);
         if (owner && owner !== client) { client.opened.delete(tabId); continue; }
-        // A detach failure is not fatal here: the tab is already gone from our
-        // control, and remove() below is what actually closes it.
-        try { await controller.detachTab(tabId); } catch {}
-        try { await chrome.tabs.remove(tabId); }
+        // A detached tab has no dialog listener, so closeTab briefly reattaches
+        // for the forced close; a failure still falls back to plain removal.
+        try { await controller.closeTab(tabId, undefined, { force: forceClose, attachIfNeeded: true }); }
         catch (error) {
           const message = String(error?.message ?? error).slice(0, 2000);
           if (!/No tab with id|Invalid tab ID/i.test(message)) {
@@ -587,6 +600,7 @@ async function cleanupOpenedTabs(client, args, signal) {
   }
   const closed = [];
   const failed = [];
+  const forceClose = await forceCloseBeforeUnload();
   for (const tabId of targets) {
     signal.throwIfAborted();
     const owner = leases.owner(tabId);
@@ -597,10 +611,10 @@ async function cleanupOpenedTabs(client, args, signal) {
     }
     const brief = await tabBrief(tabId);
     try {
-      // Detach first so emulation and debugger state are restored before the
-      // tab disappears. A detach failure must not stop the tab from closing.
-      await controller.detachTab(tabId).catch(() => {});
-      await chrome.tabs.remove(tabId);
+      // Close while the debugger session is still attached so a beforeunload
+      // prompt can be accepted. closeTab removes the tab and drops local state;
+      // the lease is released explicitly below.
+      await controller.closeTab(tabId, signal, { force: forceClose, attachIfNeeded: true });
       leases.release(tabId, client);
       client.opened.delete(tabId);
       closed.push(brief);
@@ -699,7 +713,10 @@ async function handleCommand(client, message) {
     const options = action === 'open'
       ? { onTabCreated: tabId => { openedTabId = tabId; const reserved = leases.reserve(tabId, client); if (reserved) client.opened.add(tabId); return reserved; } }
       : undefined;
-    response = { result: action === 'cleanup' ? await cleanupOpenedTabs(client, args, cancellation.signal) : await controller.execute(action, args, cancellation.signal, options) };
+    const commandArgs = action === 'close' && args.force === undefined
+      ? { ...args, force: await forceCloseBeforeUnload() }
+      : args;
+    response = { result: action === 'cleanup' ? await cleanupOpenedTabs(client, args, cancellation.signal) : await controller.execute(action, commandArgs, cancellation.signal, options) };
     if (action === 'close' && tabId !== undefined) client.opened.delete(tabId);
   } catch (error) {
     response = failResult(action, message, error);

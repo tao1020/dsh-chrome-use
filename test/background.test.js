@@ -583,14 +583,15 @@ test('two simultaneous pairings are serialized and neither token is lost', async
 
 test('disconnect also cleans a tab that was opened but never released', async t => {
   const { api, commandOn, socketFor, settled } = await twoHarnesses(t);
-  const detached = [];
-  api.debugger.detach = async target => { detached.push(target.tabId); };
+  const removed = [];
+  const remove = api.tabs.remove;
+  api.tabs.remove = async id => { removed.push(id); return remove(id); };
   await commandOn(18791, 'a-open', 'open', { url: 'https://example.com/', group: 'series' });
   assert.equal(resultOf(socketFor(18791), 'a-open').result.tabId, 9);
   socketFor(18791).close();
   await settled();
   await settled();
-  assert.deepEqual(detached, [9]);
+  assert.deepEqual(removed, [9]);
   await commandOn(18793, 'b-claim9', 'claim', { tabId: 9 });
   assert.equal(resultOf(socketFor(18793), 'b-claim9').result.attached, true);
 });
@@ -1136,6 +1137,33 @@ test('cleanup previews and closes only tabs this harness opened', async t => {
   assert.ok(!tabUrls.has(9));
   assert.ok(tabUrls.has(10), 'another harness tab must stay open');
   assert.ok(!cleaned.closed.some(item => item.tabId === 7), 'a claimed user tab must not be in closed');
+});
+
+test('close follows the popup force-close setting unless the call overrides it', async t => {
+  const { api, stored, commandOn, socketFor, listeners, settled } = await twoHarnesses(t);
+  stored.forceCloseBeforeUnload = false;
+  await commandOn(18791, 'a-claim', 'claim', { tabId: 7 });
+  const dialogs = [];
+  const send = api.debugger.sendCommand;
+  api.debugger.sendCommand = async (target, method, params) => {
+    if (method === 'Page.handleJavaScriptDialog') dialogs.push(params);
+    return send(target, method, params);
+  };
+  const remove = api.tabs.remove;
+  api.tabs.remove = async id => {
+    listeners.debugEvent({ tabId: id }, 'Page.javascriptDialogOpening', { type: 'beforeunload', message: 'Leave?' });
+    return remove(id);
+  };
+
+  await commandOn(18791, 'a-close-off', 'close', { tabId: 7 });
+  assert.equal(resultOf(socketFor(18791), 'a-close-off').result.forcedBeforeUnload, false);
+  assert.deepEqual(dialogs, []);
+
+  await commandOn(18791, 'a-claim-again', 'claim', { tabId: 8 });
+  await commandOn(18791, 'a-close-on', 'close', { tabId: 8, force: true });
+  await settled();
+  assert.equal(resultOf(socketFor(18791), 'a-close-on').result.forcedBeforeUnload, true);
+  assert.deepEqual(dialogs, [{ accept: true }]);
 });
 
 test('disconnecting closes tabs this harness opened but keeps claimed user tabs', async t => {
