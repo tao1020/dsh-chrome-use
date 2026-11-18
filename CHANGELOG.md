@@ -3,6 +3,18 @@
 版本号遵循语义化版本。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 扩展版本和 Harness 插件版本始终一起发布，数字保持一致。
 
+## [0.12.0] - 2026-11-18
+
+### 新增
+
+- chrome_cleanup：关闭本会话用 chrome_open 打开的标签页，避免一个任务结束后留下几十个标签页。dryRun=true 可以先看会关哪些，keep=[tabId] 保留指定的页面；只关本会话自己打开的页面，不会关用户自己打开的页面、只是 claim 的页面或其他会话的页面。任务结束时显式调用一次即可。
+- WebSocket 断开时自动做同样的清理：只关闭本会话用 chrome_open 打开的标签页，用户自己打开的页面和其他会话的页面保持原样；重连不会误关。
+- chrome_tabs 的输出增加 windowId，方便区分不同 Chrome 窗口里的标签页。
+
+### 文档
+
+- 运行期 skill 指南补充 chrome_cleanup、断线自动清理和「只清理自己打开的页面」的边界。
+
 ## [0.11.0] - 2026-11-18
 
 ### 新增

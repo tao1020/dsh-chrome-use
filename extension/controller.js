@@ -725,7 +725,7 @@ export class BrowserController {
     };
     if (action === 'tabs') {
       const tabs = await bounded(this.api.tabs.query({}), signal, 'tabs.query');
-      return { tabs: tabs.filter(tab => /^https?:\/\//.test(tab.url ?? '')).map(tab => ({ tabId: tab.id, title: clip(tab.title, 300), url: clip(tab.url, 4096), attached: this.attached.has(tab.id) })) };
+      return { tabs: tabs.filter(tab => /^https?:\/\//.test(tab.url ?? '')).map(tab => ({ tabId: tab.id, windowId: tab.windowId ?? null, title: clip(tab.title, 300), url: clip(tab.url, 4096), attached: this.attached.has(tab.id) })) };
     }
     if (action === 'open') {
       const url = pageUrl(args.url);

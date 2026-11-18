@@ -1104,3 +1104,54 @@ test('an unread hint above the cap reports the cap instead of a count the bridge
   assert.equal(inbox.unread, 50);
   assert.deepEqual(inbox.senders, ['18795', '18793']);
 });
+
+test('cleanup previews and closes only tabs this harness opened', async t => {
+  const { commandOn, socketFor, tabUrls } = await twoHarnesses(t);
+  await commandOn(18791, 'a-claim', 'claim', { tabId: 7 });
+  await commandOn(18791, 'a-open', 'open', { url: 'https://example.com/a', group: 'cleanup' });
+  await commandOn(18793, 'b-open', 'open', { url: 'https://example.com/b', group: 'cleanup' });
+  const opened = resultOf(socketFor(18791), 'a-open').result.tabId;
+  const other = resultOf(socketFor(18793), 'b-open').result.tabId;
+  assert.equal(opened, 9);
+  assert.equal(other, 10);
+  await commandOn(18791, 'a-release', 'release', { tabId: 9 });
+
+  await commandOn(18791, 'a-dry', 'cleanup', { dryRun: true });
+  const dry = resultOf(socketFor(18791), 'a-dry').result;
+  assert.equal(dry.dryRun, true);
+  assert.deepEqual(dry.wouldClose.map(item => item.tabId), [9]);
+  assert.deepEqual(dry.closed, []);
+  assert.ok(tabUrls.has(9) && tabUrls.has(10));
+
+  await commandOn(18791, 'a-keep', 'cleanup', { keep: [9] });
+  const kept = resultOf(socketFor(18791), 'a-keep').result;
+  assert.deepEqual(kept.closed, []);
+  assert.deepEqual(kept.kept.map(item => item.tabId), [9]);
+  assert.ok(tabUrls.has(9));
+
+  await commandOn(18791, 'a-clean', 'cleanup', {});
+  const cleaned = resultOf(socketFor(18791), 'a-clean').result;
+  assert.deepEqual(cleaned.closed.map(item => item.tabId), [9]);
+  assert.deepEqual(cleaned.failed, []);
+  assert.ok(!tabUrls.has(9));
+  assert.ok(tabUrls.has(10), 'another harness tab must stay open');
+  assert.ok(!cleaned.closed.some(item => item.tabId === 7), 'a claimed user tab must not be in closed');
+});
+
+test('disconnecting closes tabs this harness opened but keeps claimed user tabs', async t => {
+  const { api, commandOn, socketFor, tabUrls } = await twoHarnesses(t);
+  const removed = [];
+  const remove = api.tabs.remove;
+  api.tabs.remove = async id => { removed.push(id); return remove(id); };
+  await commandOn(18791, 'a-claim', 'claim', { tabId: 7 });
+  await commandOn(18791, 'a-open', 'open', { url: 'https://example.com/a', group: 'cleanup' });
+  await commandOn(18793, 'b-open', 'open', { url: 'https://example.com/b', group: 'cleanup' });
+  assert.equal(resultOf(socketFor(18791), 'a-open').result.tabId, 9);
+  assert.equal(resultOf(socketFor(18793), 'b-open').result.tabId, 10);
+  await commandOn(18791, 'a-release', 'release', { tabId: 9 });
+
+  socketFor(18791).close();
+  await until(() => !tabUrls.has(9));
+  assert.ok(!removed.includes(7), 'a claimed user tab must stay open');
+  assert.ok(tabUrls.has(10), 'another harness tab must stay open');
+});
