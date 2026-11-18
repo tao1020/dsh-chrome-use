@@ -36,7 +36,7 @@ let restoring;
 // delivers synthesized input to the current tab. Queue them across tabs so two
 // commands cannot switch the same window underneath each other. They do not
 // touch window focus, so the user keeps typing in whichever app is in front.
-const inputActions = new Set(['activate', 'close', 'click', 'fill', 'key', 'hover', 'select', 'upload', 'drag', 'scroll_to', 'scroll']);
+const inputActions = new Set(['activate', 'cleanup', 'close', 'click', 'fill', 'key', 'hover', 'select', 'upload', 'drag', 'scroll_to', 'scroll']);
 const inputQueue = [];
 let inputBusy = false;
 function acquireInput(signal) {
@@ -203,6 +203,7 @@ function createClient(port) {
     name: null,
     lastError: '',
     tasks: new Map(),
+    opened: new Set(),
     drain: undefined,
     revoked: false,
     abortStart: undefined,
@@ -232,7 +233,7 @@ async function saveToken(client, port, token, name) {
   });
 }
 
-async function drainClient(client) {
+async function drainClient(client, { closeOpened = false } = {}) {
   if (client.drain) return client.drain;
   client.drain = (async () => {
     // Block commands as soon as cleanup starts, before the first await.
@@ -244,11 +245,12 @@ async function drainClient(client) {
     // new one. Re-enumerate; never trust the pre-abort snapshot.
     for (let pass = 0; pass < 2; pass++) {
       const tabs = leases.ownedBy(client);
-      if (!tabs.length) return;
+      if (!tabs.length) break;
       for (const tabId of tabs) leases.beginClose(tabId, client);
       for (const tabId of tabs) {
         if (leases.owner(tabId) !== client) continue;
         if (leases.get(tabId)?.state === 'quarantined') continue;
+        const wasOpened = closeOpened && client.opened.has(tabId);
         try {
           await controller.detachTab(tabId);
         } catch (error) {
@@ -260,11 +262,45 @@ async function drainClient(client) {
           }
           continue;
         }
+        // Detach releases the lease through the controller callback, so remove
+        // the tab only after native cleanup; a failed remove leaves it open.
+        if (wasOpened) {
+          try { await chrome.tabs.remove(tabId); }
+          catch (error) {
+            const message = String(error?.message ?? error).slice(0, 2000);
+            if (!/No tab with id|Invalid tab ID/i.test(message)) {
+              client.lastError = message;
+              lastError = message;
+              portErrors.set(client.port, message);
+            }
+          }
+          client.opened.delete(tabId);
+        }
         // A task or a late callback may have released/reassigned the lease while
         // native detach was running; do not clean up someone else's tab.
         if (leases.owner(tabId) !== client) continue;
         if (controller.attached.has(tabId) || controller.pendingCleanup.has(tabId)) leases.quarantine(tabId, client);
         else leases.release(tabId, client);
+      }
+    }
+    // A released tab still belongs to the task that opened it. Close those too
+    // on disconnect, but never a tab another Harness has claimed meanwhile.
+    if (closeOpened) {
+      for (const tabId of [...client.opened]) {
+        const owner = leases.owner(tabId);
+        if (owner && owner !== client) { client.opened.delete(tabId); continue; }
+        // A detach failure is not fatal here: the tab is already gone from our
+        // control, and remove() below is what actually closes it.
+        try { await controller.detachTab(tabId); } catch {}
+        try { await chrome.tabs.remove(tabId); }
+        catch (error) {
+          const message = String(error?.message ?? error).slice(0, 2000);
+          if (!/No tab with id|Invalid tab ID/i.test(message)) {
+            lastError = message;
+            portErrors.set(client.port, message);
+          }
+        }
+        client.opened.delete(tabId);
       }
     }
   })();
@@ -369,7 +405,7 @@ async function startClient(client, { code, restoreEpoch } = {}) {
         client.connected = false;
         clients.delete(port);
         updateBadge();
-        drainClient(client).catch(error => { lastError = String(error.message); });
+        drainClient(client, { closeOpened: true }).catch(error => { lastError = String(error.message); });
         finish(reject, new Error(client.lastError || `Connection to port ${port} closed. Reconnect to continue.`));
       };
     });
@@ -522,6 +558,72 @@ async function settleFailedLease(client, tabId, action) {
   leases.release(tabId, client);
 }
 
+async function tabBrief(tabId) {
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    return { tabId, title: String(tab.title ?? '').slice(0, 300), url: String(tab.url ?? '').slice(0, 2000) };
+  } catch {
+    return { tabId };
+  }
+}
+
+// Close only tabs this connection created with chrome_open. A tab the user
+// already had stays open even when this connection claimed it, because closing
+// user tabs is never a cleanup side effect.
+async function cleanupOpenedTabs(client, args, signal) {
+  const keep = new Set(args.keep ?? []);
+  const opened = [...client.opened];
+  const targets = opened.filter(tabId => !keep.has(tabId));
+  const kept = await Promise.all(opened.filter(tabId => keep.has(tabId)).map(tabBrief));
+  if (args.dryRun) {
+    const wouldClose = [];
+    const skipped = [];
+    for (const tabId of targets) {
+      const owner = leases.owner(tabId);
+      if (owner && owner !== client) skipped.push({ tabId, error: 'TAB_OWNED_BY_ANOTHER_HARNESS' });
+      else wouldClose.push(await tabBrief(tabId));
+    }
+    return { dryRun: true, wouldClose, kept, closed: [], failed: skipped, note: 'Dry run: nothing was closed.' };
+  }
+  const closed = [];
+  const failed = [];
+  for (const tabId of targets) {
+    signal.throwIfAborted();
+    const owner = leases.owner(tabId);
+    if (owner && owner !== client) {
+      client.opened.delete(tabId);
+      failed.push({ tabId, error: 'TAB_OWNED_BY_ANOTHER_HARNESS: another Harness claimed this tab; cleanup left it alone' });
+      continue;
+    }
+    const brief = await tabBrief(tabId);
+    try {
+      // Detach first so emulation and debugger state are restored before the
+      // tab disappears. A detach failure must not stop the tab from closing.
+      await controller.detachTab(tabId).catch(() => {});
+      await chrome.tabs.remove(tabId);
+      leases.release(tabId, client);
+      client.opened.delete(tabId);
+      closed.push(brief);
+    } catch (error) {
+      const message = String(error?.message ?? error).slice(0, 500);
+      if (/No tab with id|Invalid tab ID/i.test(message)) {
+        leases.release(tabId, client);
+        client.opened.delete(tabId);
+        closed.push(brief);
+      } else {
+        failed.push({ ...brief, error: message });
+      }
+    }
+  }
+  return {
+    dryRun: false,
+    closed,
+    kept,
+    failed,
+    note: closed.length ? 'Closed tabs opened by this Harness. User-opened tabs and other Harnesses are untouched.' : 'No tabs opened by this Harness were open.',
+  };
+}
+
 async function handleCommand(client, message) {
   const id = message.id;
   if (typeof id !== 'string' || id.length > 200 || !Number.isFinite(message.deadline) || message.deadline <= Date.now() || message.deadline > Date.now() + 20000) {
@@ -595,9 +697,10 @@ async function handleCommand(client, message) {
       releaseInput = await acquireInput(cancellation.signal);
     }
     const options = action === 'open'
-      ? { onTabCreated: tabId => { openedTabId = tabId; return leases.reserve(tabId, client); } }
+      ? { onTabCreated: tabId => { openedTabId = tabId; const reserved = leases.reserve(tabId, client); if (reserved) client.opened.add(tabId); return reserved; } }
       : undefined;
-    response = { result: await controller.execute(action, args, cancellation.signal, options) };
+    response = { result: action === 'cleanup' ? await cleanupOpenedTabs(client, args, cancellation.signal) : await controller.execute(action, args, cancellation.signal, options) };
+    if (action === 'close' && tabId !== undefined) client.opened.delete(tabId);
   } catch (error) {
     response = failResult(action, message, error);
   } finally {
