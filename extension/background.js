@@ -1,4 +1,5 @@
 import { BrowserController } from './controller.js';
+import { createIdleTabs, IDLE_ALARM, IDLE_CHECK_MINUTES, IDLE_CLOSE_SECONDS, MAX_IDLE_CLOSE_SECONDS, IDLE_SETTING, IDLE_TIMEOUT_SETTING } from './idle-tabs.js';
 import { TabLeases } from './leases.js';
 import { PORT, MAX_MESSAGE, PARALLEL_TABS, MESSAGE_UNREAD_MAX, validateArgs } from './protocol.js';
 import { classifyPairingCode } from './pairing-code.js';
@@ -76,6 +77,8 @@ const controller = new BrowserController(chrome, (tabId, reason) => {
     owner.socket.send(JSON.stringify({ type: 'detached', tabId, ...(reason ? { reason: String(reason).slice(0, 40) } : {}) }));
   }
 });
+const idleTabs = createIdleTabs(chrome.storage.session);
+const idleClosing = new Set();
 const badge = text => { chrome.action.setBadgeText({ text }); chrome.action.setBadgeBackgroundColor({ color: '#185adb' }); };
 const updateBadge = () => badge([...clients.values()].some(client => client.connected) ? 'ON' : '');
 const isToken = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
@@ -245,6 +248,120 @@ async function forceCloseBeforeUnload() {
   }
 }
 
+async function idleCloseEnabled() {
+  try {
+    const stored = await chrome.storage.local.get(IDLE_SETTING);
+    return stored[IDLE_SETTING] === true;
+  } catch {
+    return false;
+  }
+}
+
+// Returns null when settings cannot be read, so a destructive sweep never
+// falls back to a guessed timeout.
+async function idleCloseTimeoutMs() {
+  try {
+    const stored = await chrome.storage.local.get(IDLE_TIMEOUT_SETTING);
+    const seconds = Number(stored[IDLE_TIMEOUT_SETTING]);
+    const valid = Number.isInteger(seconds) && seconds >= 1 && seconds <= MAX_IDLE_CLOSE_SECONDS;
+    return (valid ? seconds : IDLE_CLOSE_SECONDS) * 1000;
+  } catch {
+    return null;
+  }
+}
+
+async function syncIdleAlarm() {
+  try {
+    if (!(await idleCloseEnabled()) || (await idleTabs.count()) === 0) {
+      await chrome.alarms.clear(IDLE_ALARM);
+      return;
+    }
+    await chrome.alarms.create(IDLE_ALARM, { periodInMinutes: IDLE_CHECK_MINUTES });
+  } catch (error) {
+    lastError = String(error?.message ?? error).slice(0, 2000);
+  }
+}
+
+function trackIdleTab(port, tabId) {
+  idleTabs.note(port, tabId).then(syncIdleAlarm).catch(error => {
+    lastError = String(error?.message ?? error).slice(0, 2000);
+  });
+}
+
+function touchIdleTab(tabId) {
+  idleTabs.touch(tabId).catch(error => {
+    lastError = String(error?.message ?? error).slice(0, 2000);
+  });
+}
+
+function forgetIdleTab(tabId) {
+  idleTabs.forget(tabId).then(syncIdleAlarm).catch(error => {
+    lastError = String(error?.message ?? error).slice(0, 2000);
+  });
+}
+
+// Only tabs this extension opened are tracked. A released tab has no lease and
+// no debugger session; once its last agent action is older than the configured
+// idle timeout it can be removed without touching user tabs or another
+// Harness's work.
+async function sweepIdleTabs() {
+  if (!(await idleCloseEnabled())) {
+    await chrome.alarms.clear(IDLE_ALARM);
+    return;
+  }
+  const timeoutMs = await idleCloseTimeoutMs();
+  if (timeoutMs === null) return;
+  const due = await idleTabs.due(timeoutMs);
+  // controller.attached is empty after a service-worker restart; ask Chrome so
+  // a tab that is still under the debugger is never treated as released.
+  let attachedTargets = new Set();
+  try {
+    const targets = await chrome.debugger.getTargets();
+    attachedTargets = new Set((targets ?? []).filter(target => target.attached && Number.isSafeInteger(target.tabId)).map(target => target.tabId));
+  } catch (error) {
+    // Without this check a stale recorded tab could be closed while a debugger
+    // is still attached; fail closed and retry on the next alarm.
+    lastError = String(error?.message ?? error).slice(0, 2000);
+    return;
+  }
+  for (const record of due) {
+    const tabId = record.tabId;
+    if (idleClosing.has(tabId) || busyTabs.has(tabId) || controller.attached.has(tabId) || attachedTargets.has(tabId) || leases.get(tabId)) continue;
+    try {
+      const tab = await chrome.tabs.get(tabId);
+      if (!tab || !/^https?:\/\//.test(tab.url ?? '')) {
+        await idleTabs.forget(tabId);
+        continue;
+      }
+    } catch {
+      await idleTabs.forget(tabId);
+      continue;
+    }
+    // A command may have claimed the tab while tabs.get was pending.
+    if (idleClosing.has(tabId) || busyTabs.has(tabId) || controller.attached.has(tabId) || attachedTargets.has(tabId) || leases.get(tabId)) continue;
+    idleClosing.add(tabId);
+    try {
+      // This close is opt-in through the popup switch, so it does not ask the
+      // page's beforeunload guard. Manual chrome_close still follows its own setting.
+      await controller.closeTab(tabId, undefined, { force: true, attachIfNeeded: true });
+      clients.get(record.port)?.opened.delete(tabId);
+      await idleTabs.forget(tabId);
+    } catch (error) {
+      const message = String(error?.message ?? error).slice(0, 500);
+      if (/No tab with id|Invalid tab ID/i.test(message)) {
+        clients.get(record.port)?.opened.delete(tabId);
+        await idleTabs.forget(tabId);
+      } else {
+        lastError = message;
+        portErrors.set(record.port, message);
+      }
+    } finally {
+      idleClosing.delete(tabId);
+    }
+  }
+  await syncIdleAlarm();
+}
+
 async function drainClient(client, { closeOpened = false } = {}) {
   if (client.drain) return client.drain;
   client.drain = (async () => {
@@ -276,6 +393,7 @@ async function drainClient(client, { closeOpened = false } = {}) {
             }
           }
           client.opened.delete(tabId);
+          forgetIdleTab(tabId);
           if (leases.owner(tabId) === client) leases.release(tabId, client);
           continue;
         }
@@ -314,6 +432,7 @@ async function drainClient(client, { closeOpened = false } = {}) {
           }
         }
         client.opened.delete(tabId);
+        forgetIdleTab(tabId);
       }
     }
   })();
@@ -606,6 +725,7 @@ async function cleanupOpenedTabs(client, args, signal) {
     const owner = leases.owner(tabId);
     if (owner && owner !== client) {
       client.opened.delete(tabId);
+      forgetIdleTab(tabId);
       failed.push({ tabId, error: 'TAB_OWNED_BY_ANOTHER_HARNESS: another Harness claimed this tab; cleanup left it alone' });
       continue;
     }
@@ -617,12 +737,14 @@ async function cleanupOpenedTabs(client, args, signal) {
       await controller.closeTab(tabId, signal, { force: forceClose, attachIfNeeded: true });
       leases.release(tabId, client);
       client.opened.delete(tabId);
+      forgetIdleTab(tabId);
       closed.push(brief);
     } catch (error) {
       const message = String(error?.message ?? error).slice(0, 500);
       if (/No tab with id|Invalid tab ID/i.test(message)) {
         leases.release(tabId, client);
         client.opened.delete(tabId);
+        forgetIdleTab(tabId);
         closed.push(brief);
       } else {
         failed.push({ ...brief, error: message });
@@ -667,6 +789,7 @@ async function handleCommand(client, message) {
     return;
   }
   const tabId = Number.isSafeInteger(args.tabId) ? args.tabId : undefined;
+  if (tabId !== undefined) touchIdleTab(tabId);
   const lease = tabId === undefined ? undefined : leases.get(tabId);
   if (lease?.state === 'quarantined') {
     sendResult(client, message, failResult(action, message, 'TAB_LEASE_QUARANTINED: this tab did not finish native cleanup; reload the extension to clear it'));
@@ -676,13 +799,21 @@ async function handleCommand(client, message) {
     sendResult(client, message, failResult(action, message, 'TAB_LEASE_CLOSING: this tab is being cleaned up; retry after cleanup settles'));
     return;
   }
+  if (tabId !== undefined && idleClosing.has(tabId)) {
+    sendResult(client, message, failResult(action, message, 'TAB_BUSY: this tab is being closed as idle; retry in a moment'));
+    return;
+  }
   if (tabId !== undefined && busyTabs.has(tabId)) {
     sendResult(client, message, failResult(action, message, 'TAB_BUSY: another command is already running on this tab'));
     return;
   }
   if (action === 'claim' && tabId !== undefined) {
-    try { leases.acquire(tabId, client); }
-    catch (error) { sendResult(client, message, failResult(action, message, error)); return; }
+    try {
+      leases.acquire(tabId, client);
+      // A tab opened by another session is no longer idle bookkeeping for that
+      // session once this connection takes it over.
+      if (!client.opened.has(tabId)) forgetIdleTab(tabId);
+    } catch (error) { sendResult(client, message, failResult(action, message, error)); return; }
   } else if (action === 'release' || action === 'close') {
     const owner = tabId === undefined ? undefined : leases.owner(tabId);
     if (!owner) { sendResult(client, message, failResult(action, message, 'TAB_NOT_LEASED: claim the tab first')); return; }
@@ -711,13 +842,13 @@ async function handleCommand(client, message) {
       releaseInput = await acquireInput(cancellation.signal);
     }
     const options = action === 'open'
-      ? { onTabCreated: tabId => { openedTabId = tabId; const reserved = leases.reserve(tabId, client); if (reserved) client.opened.add(tabId); return reserved; } }
+      ? { onTabCreated: tabId => { openedTabId = tabId; const reserved = leases.reserve(tabId, client); if (reserved) { client.opened.add(tabId); trackIdleTab(client.port, tabId); } return reserved; } }
       : undefined;
     const commandArgs = action === 'close' && args.force === undefined
       ? { ...args, force: await forceCloseBeforeUnload() }
       : args;
     response = { result: action === 'cleanup' ? await cleanupOpenedTabs(client, args, cancellation.signal) : await controller.execute(action, commandArgs, cancellation.signal, options) };
-    if (action === 'close' && tabId !== undefined) client.opened.delete(tabId);
+    if (action === 'close' && tabId !== undefined) { client.opened.delete(tabId); forgetIdleTab(tabId); }
   } catch (error) {
     response = failResult(action, message, error);
   } finally {
@@ -895,8 +1026,20 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
   return true;
 });
 
+chrome.tabs.onRemoved.addListener(tabId => {
+  forgetIdleTab(tabId);
+});
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== 'local' || !changes[IDLE_SETTING]) return;
+  syncIdleAlarm().catch(error => { lastError = error.message; });
+});
 chrome.alarms.onAlarm.addListener(alarm => {
   if (alarm.name === 'reconnect') restoreConnections().catch(error => { lastError = error.message; });
+  else if (alarm.name === IDLE_ALARM) sweepIdleTabs().catch(error => { lastError = error.message; });
 });
-chrome.runtime.onStartup.addListener(() => restoreConnections().catch(error => { lastError = error.message; }));
+chrome.runtime.onStartup.addListener(() => {
+  restoreConnections().catch(error => { lastError = error.message; });
+  syncIdleAlarm().catch(error => { lastError = error.message; });
+});
 restoreConnections().catch(error => { lastError = error.message; });
+syncIdleAlarm().catch(error => { lastError = error.message; });

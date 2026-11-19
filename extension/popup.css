@@ -41,6 +41,10 @@ li { padding: 5px 0; overflow-wrap: anywhere; }
 .secondary:hover:not(:disabled) { background: #edf3fc; }
 .mode-row { display: flex; align-items: center; gap: 7px; margin: 6px 0 8px; font-size: 13px; font-weight: 600; }
 .mode-row input { width: auto; margin: 0; padding: 0; letter-spacing: 0; }
+.duration-row { display: flex; align-items: center; gap: 6px; margin: 6px 0 8px; font-size: 13px; }
+.duration-row .duration-input { width: 58px; padding: 6px 7px; text-align: right; letter-spacing: 0; }
+.error { color: #a22331; margin: -2px 0 8px; }
+.error:empty { display: none; }
 #error { color: #a22331; font-size: 12px; overflow-wrap: anywhere; margin: 8px 0 0; }
 #error:empty { display: none; }
 .pair-help { margin: 8px 0 0; }

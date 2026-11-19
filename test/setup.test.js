@@ -45,6 +45,18 @@ test('popup offers a checked close-without-confirmation switch', async () => {
   assert.match(html, /由你选择离开或取消/);
 });
 
+test('popup offers an unchecked idle-tab close switch with a configurable timeout', async () => {
+  const html = await readFile(new URL('../extension/popup.html', import.meta.url), 'utf8');
+  assert.match(html, /<input type="checkbox" id="idle-close">/);
+  assert.doesNotMatch(html, /id="idle-close" checked/);
+  assert.match(html, /id="idle-minutes"[^>]*min="0"[^>]*max="600"[^>]*value="30"/);
+  assert.match(html, /id="idle-seconds"[^>]*min="0"[^>]*max="59"[^>]*value="0"/);
+  assert.match(html, /默认 30 分 0 秒/);
+  assert.match(html, /1 秒到 600 分钟/);
+  assert.match(html, /只处理 Agent 打开的页面/);
+  assert.match(html, /chrome_cleanup/);
+});
+
 test('popup links to the pairing help right below the code input', async () => {
   const popup = await readFile(new URL('../extension/popup.html', import.meta.url), 'utf8');
   const help = popup.indexOf('使用帮助（Help');

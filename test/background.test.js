@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { PARALLEL_TABS } from '../extension/protocol.js';
 import { encodePairingCode } from '../extension/pairing-code.js';
+import { IDLE_CLOSE_MS } from '../extension/idle-tabs.js';
 
 async function until(predicate, timeout = 2000) {
   const start = Date.now();
@@ -13,6 +14,7 @@ async function until(predicate, timeout = 2000) {
 
 async function fixture(t, initial = {}) {
   const stored = { ...initial };
+  const session = {};
   const listeners = {};
   const sockets = [];
   const alarms = new Set();
@@ -34,11 +36,19 @@ async function fixture(t, initial = {}) {
   };
   const api = {
     runtime,
-    storage: { local: {
-      get: async () => ({ ...stored }),
-      set: async value => { Object.assign(stored, value); },
-      remove: async key => { delete stored[key]; },
-    } },
+    storage: {
+      local: {
+        get: async () => ({ ...stored }),
+        set: async value => { Object.assign(stored, value); },
+        remove: async key => { delete stored[key]; },
+      },
+      session: {
+        get: async key => ({ [key]: session[key] }),
+        set: async value => { Object.assign(session, value); },
+        remove: async key => { delete session[key]; },
+      },
+      onChanged: event('storageChanged'),
+    },
     action: { setBadgeText() {}, setBadgeBackgroundColor() {} },
     alarms: { onAlarm: event('alarm'), create: async name => alarms.add(name), clear: async name => alarms.delete(name) },
     tabs: {
@@ -56,6 +66,7 @@ async function fixture(t, initial = {}) {
     debugger: {
       onDetach: event('detach'),
       onEvent: event('debugEvent'),
+      getTargets: async () => [],
       attach: async () => {},
       detach: async () => {},
       sendCommand: async (target, method, params) => {
@@ -121,7 +132,7 @@ async function fixture(t, initial = {}) {
   await settled();
   await settled();
   return {
-    stored, sockets, alarms, listeners, message, settled, command, commandOn, socketFor, socketCount,
+    stored, session, sockets, alarms, listeners, message, settled, command, commandOn, socketFor, socketCount,
     api, readyTokens, heldReady, setReadyName: (port, name) => readyNames.set(port, name),
     holdReady: port => { autoReady = false; heldReady.add(port); },
     releaseReady,
@@ -376,6 +387,7 @@ async function twoHarnesses(t) {
     connections: [{ port: 18791, token: 'a'.repeat(64) }, { port: 18793, token: 'b'.repeat(64) }],
     enabled: true,
     foregroundMode: false,
+    autoCloseIdleTabs: true,
   });
   await until(() => fixtureState.socketFor(18791) && fixtureState.socketFor(18793));
   return fixtureState;
@@ -1182,4 +1194,125 @@ test('disconnecting closes tabs this harness opened but keeps claimed user tabs'
   await until(() => !tabUrls.has(9));
   assert.ok(!removed.includes(7), 'a claimed user tab must stay open');
   assert.ok(tabUrls.has(10), 'another harness tab must stay open');
+});
+
+test('an idle released agent tab closes after thirty minutes and leaves user and other Harness tabs alone', async t => {
+  const { api, commandOn, socketFor, listeners, session, tabUrls } = await twoHarnesses(t);
+  const removed = [];
+  const remove = api.tabs.remove;
+  api.tabs.remove = async id => { removed.push(id); return remove(id); };
+  await commandOn(18791, 'a-claim', 'claim', { tabId: 7 });
+  await commandOn(18791, 'a-open', 'open', { url: 'https://example.com/a', group: 'idle' });
+  await commandOn(18793, 'b-open', 'open', { url: 'https://example.com/b', group: 'idle' });
+  assert.equal(resultOf(socketFor(18791), 'a-open').result.tabId, 9);
+  assert.equal(resultOf(socketFor(18793), 'b-open').result.tabId, 10);
+  await until(() => session.openedTabActivity?.length === 2);
+  await commandOn(18791, 'a-release', 'release', { tabId: 9 });
+
+  const old = Date.now() - IDLE_CLOSE_MS - 1;
+  await api.storage.session.set({ openedTabActivity: session.openedTabActivity.map(row => row.tabId === 9 ? { ...row, lastActivityAt: old } : row) });
+  listeners.alarm({ name: 'idle-tabs' });
+  await until(() => !tabUrls.has(9));
+  assert.ok(removed.includes(9));
+  assert.ok(!removed.includes(7), 'a claimed user tab must not be closed as idle');
+  assert.ok(tabUrls.has(10), 'another Harness tab must stay open');
+  assert.deepEqual((session.openedTabActivity ?? []).map(row => row.tabId), [10]);
+  await commandOn(18791, 'a-cleanup', 'cleanup', {});
+  assert.deepEqual(resultOf(socketFor(18791), 'a-cleanup').result.closed, [], 'the idle-closed tab is no longer in this session opened list');
+});
+
+test('a tab still under the debugger is never closed as idle', async t => {
+  const { api, commandOn, socketFor, listeners, session, tabUrls } = await twoHarnesses(t);
+  await commandOn(18791, 'a-open', 'open', { url: 'https://example.com/a', group: 'idle' });
+  assert.equal(resultOf(socketFor(18791), 'a-open').result.tabId, 9);
+  await until(() => session.openedTabActivity?.length === 1);
+  const old = Date.now() - IDLE_CLOSE_MS - 1;
+  await api.storage.session.set({ openedTabActivity: [{ tabId: 9, port: 18791, lastActivityAt: old }] });
+  listeners.alarm({ name: 'idle-tabs' });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.ok(tabUrls.has(9), 'attached tab must not be closed');
+
+  await commandOn(18791, 'a-release', 'release', { tabId: 9 });
+  await api.storage.session.set({ openedTabActivity: [{ tabId: 9, port: 18791, lastActivityAt: old }] });
+  listeners.alarm({ name: 'idle-tabs' });
+  await until(() => !tabUrls.has(9));
+});
+
+test('idle closing is off by default and starts only after the setting is enabled', async t => {
+  const { api, commandOn, socketFor, listeners, session, stored, tabUrls, alarms } = await fixture(t, {
+    connections: [{ port: 18791, token: 'a'.repeat(64) }],
+    enabled: true,
+    foregroundMode: false,
+  });
+  await until(() => socketFor(18791));
+  await commandOn(18791, 'a-open', 'open', { url: 'https://example.com/a', group: 'idle' });
+  assert.equal(resultOf(socketFor(18791), 'a-open').result.tabId, 9);
+  await until(() => session.openedTabActivity?.length === 1);
+  await commandOn(18791, 'a-release', 'release', { tabId: 9 });
+  assert.equal(alarms.has('idle-tabs'), false, 'no alarm while the switch is off');
+
+  const old = Date.now() - IDLE_CLOSE_MS - 1;
+  await api.storage.session.set({ openedTabActivity: [{ tabId: 9, port: 18791, lastActivityAt: old }] });
+  listeners.alarm({ name: 'idle-tabs' });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.ok(tabUrls.has(9), 'must not close while the switch is off');
+
+  stored.autoCloseIdleTabs = true;
+  listeners.storageChanged({ autoCloseIdleTabs: { newValue: true } }, 'local');
+  await until(() => alarms.has('idle-tabs'));
+  listeners.alarm({ name: 'idle-tabs' });
+  await until(() => !tabUrls.has(9));
+});
+
+test('idle closing honors the configured timeout in seconds', async t => {
+  const { api, commandOn, socketFor, listeners, session, stored, tabUrls } = await twoHarnesses(t);
+  stored.idleCloseSeconds = 1;
+  await commandOn(18791, 'a-open', 'open', { url: 'https://example.com/a', group: 'idle' });
+  const tabId = resultOf(socketFor(18791), 'a-open').result.tabId;
+  await until(() => session.openedTabActivity?.length === 1);
+  await commandOn(18791, 'a-release', 'release', { tabId });
+  await api.storage.session.set({ openedTabActivity: [{ tabId, port: 18791, lastActivityAt: Date.now() - 2000 }] });
+  listeners.alarm({ name: 'idle-tabs' });
+  await until(() => !tabUrls.has(tabId));
+});
+
+test('an invalid stored idle timeout falls back to thirty minutes', async t => {
+  const { api, commandOn, socketFor, listeners, session, stored, tabUrls } = await twoHarnesses(t);
+  stored.idleCloseSeconds = 0;
+  await commandOn(18791, 'a-open', 'open', { url: 'https://example.com/a', group: 'idle' });
+  const tabId = resultOf(socketFor(18791), 'a-open').result.tabId;
+  await until(() => session.openedTabActivity?.length === 1);
+  await commandOn(18791, 'a-release', 'release', { tabId });
+  await api.storage.session.set({ openedTabActivity: [{ tabId, port: 18791, lastActivityAt: Date.now() - IDLE_CLOSE_MS + 1000 }] });
+  listeners.alarm({ name: 'idle-tabs' });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.ok(tabUrls.has(tabId), 'must not treat an invalid timeout as zero');
+});
+
+test('turning off idle closing clears the alarm and keeps old tabs open', async t => {
+  const { api, commandOn, socketFor, listeners, session, stored, tabUrls, alarms } = await twoHarnesses(t);
+  await commandOn(18791, 'a-open', 'open', { url: 'https://example.com/a', group: 'idle' });
+  assert.equal(resultOf(socketFor(18791), 'a-open').result.tabId, 9);
+  await until(() => session.openedTabActivity?.length === 1 && alarms.has('idle-tabs'));
+  stored.autoCloseIdleTabs = false;
+  listeners.storageChanged({ autoCloseIdleTabs: { newValue: false } }, 'local');
+  await until(() => !alarms.has('idle-tabs'));
+
+  const old = Date.now() - IDLE_CLOSE_MS - 1;
+  await api.storage.session.set({ openedTabActivity: [{ tabId: 9, port: 18791, lastActivityAt: old }] });
+  listeners.alarm({ name: 'idle-tabs' });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.ok(tabUrls.has(9));
+});
+
+test('idle closing fails closed when Chrome cannot report debugger targets', async t => {
+  const { api, commandOn, socketFor, listeners, session, tabUrls } = await twoHarnesses(t);
+  await commandOn(18791, 'a-open', 'open', { url: 'https://example.com/a', group: 'idle' });
+  assert.equal(resultOf(socketFor(18791), 'a-open').result.tabId, 9);
+  await until(() => session.openedTabActivity?.length === 1);
+  await api.storage.session.set({ openedTabActivity: [{ tabId: 9, port: 18791, lastActivityAt: Date.now() - IDLE_CLOSE_MS - 1 }] });
+  api.debugger.getTargets = async () => { throw new Error('debugger targets unavailable'); };
+  listeners.alarm({ name: 'idle-tabs' });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.ok(tabUrls.has(9), 'must not close when attachment state cannot be verified');
 });
