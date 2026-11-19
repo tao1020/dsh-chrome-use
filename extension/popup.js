@@ -1,4 +1,5 @@
 import { popupState } from './popup-state.js';
+import { IDLE_CLOSE_SECONDS, MAX_IDLE_CLOSE_SECONDS, IDLE_TIMEOUT_SETTING } from './idle-tabs.js';
 
 const $ = id => document.getElementById(id);
 function connectionItem(row) {
@@ -89,6 +90,41 @@ chrome.storage.local.get('forceCloseBeforeUnload').then(
   () => {}, // Keep the default (forced close on) when settings cannot be read.
 );
 forceClose.addEventListener('change', () => { chrome.storage.local.set({ forceCloseBeforeUnload: forceClose.checked }); });
+const idleClose = $('idle-close');
+const idleMinutes = $('idle-minutes');
+const idleSeconds = $('idle-seconds');
+const idleError = $('idle-error');
+function showIdleTimeout(seconds) {
+  const total = Number.isInteger(seconds) && seconds >= 1 && seconds <= MAX_IDLE_CLOSE_SECONDS ? seconds : IDLE_CLOSE_SECONDS;
+  idleMinutes.value = String(Math.floor(total / 60));
+  idleSeconds.value = String(total % 60);
+}
+function readIdleTimeout() {
+  const minutes = Number(idleMinutes.value);
+  const seconds = Number(idleSeconds.value);
+  if (!Number.isInteger(minutes) || !Number.isInteger(seconds) || minutes < 0 || minutes > 600 || seconds < 0 || seconds > 59) return null;
+  const total = minutes * 60 + seconds;
+  return total >= 1 && total <= MAX_IDLE_CLOSE_SECONDS ? total : null;
+}
+function saveIdleTimeout() {
+  const total = readIdleTimeout();
+  if (total === null) {
+    idleError.textContent = '请输入 1 秒到 600 分钟之间的时间。';
+    return;
+  }
+  idleError.textContent = '';
+  chrome.storage.local.set({ [IDLE_TIMEOUT_SETTING]: total });
+}
+chrome.storage.local.get(IDLE_TIMEOUT_SETTING).then(
+  ({ [IDLE_TIMEOUT_SETTING]: stored }) => { showIdleTimeout(Number(stored)); },
+  () => { showIdleTimeout(IDLE_CLOSE_SECONDS); },
+);
+for (const input of [idleMinutes, idleSeconds]) input.addEventListener('change', saveIdleTimeout);
+chrome.storage.local.get('autoCloseIdleTabs').then(
+  ({ autoCloseIdleTabs }) => { idleClose.checked = autoCloseIdleTabs === true; },
+  () => {}, // Keep the default (idle cleanup off) when settings cannot be read.
+);
+idleClose.addEventListener('change', () => { chrome.storage.local.set({ autoCloseIdleTabs: idleClose.checked }); });
 $('pair-form').addEventListener('submit', async event => {
   event.preventDefault();
   const result = await act('connect', { code: $('code').value });

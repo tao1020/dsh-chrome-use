@@ -34,6 +34,20 @@
       <p class="help">开：Agent 关闭标签页时直接关掉，不再弹出网页的“离开此网站？”提示，页面未保存的修改会丢弃。</p>
       <p class="help">关：保留这个提示，由你选择离开或取消。改完立即生效。</p>
     </section>
+    <section aria-label="空闲标签页">
+      <h2>空闲标签页</h2>
+      <label class="mode-row"><input type="checkbox" id="idle-close"> <span>关闭空闲标签页</span></label>
+      <div class="duration-row">
+        <span>空闲超过</span>
+        <input class="duration-input" id="idle-minutes" type="number" min="0" max="600" step="1" value="30" inputmode="numeric" aria-label="空闲分钟" aria-describedby="idle-error">
+        <span>分</span>
+        <input class="duration-input" id="idle-seconds" type="number" min="0" max="59" step="1" value="0" inputmode="numeric" aria-label="空闲秒" aria-describedby="idle-error">
+        <span>秒后自动关闭</span>
+      </div>
+      <p id="idle-error" class="help error" role="alert"></p>
+      <p class="help">默认 30 分 0 秒，可设置 1 秒到 600 分钟。勾选后：Agent 打开、已经不在调试，并且超过这个时间没有操作的标签页会自动关闭。只处理 Agent 打开的页面，不会关用户自己的页面。</p>
+      <p class="help">不勾选：保留这些标签页，需要时手动用 chrome_cleanup 清理。改完立即生效。</p>
+    </section>
     <button id="disconnect" class="secondary">断开全部连接</button>
   </main>
   <footer>
