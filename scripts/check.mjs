@@ -8,6 +8,8 @@ for (const directory of ['src', 'extension', 'scripts', 'test']) {
     assert.equal(result.status, 0, `${directory}/${file} syntax`);
   }
 }
+const buildCheck = spawnSync(process.execPath, ['scripts/build-client.mjs', '--check'], { stdio: 'inherit' });
+assert.equal(buildCheck.status, 0, 'src/client.js is in sync with its sources and package version');
 const pkg = JSON.parse(await readFile('package.json', 'utf8'));
 const manifest = JSON.parse(await readFile('extension/manifest.json', 'utf8'));
 assert.equal(manifest.version, pkg.version);
@@ -17,4 +19,4 @@ assert.equal(manifest.host_permissions, undefined);
 assert.equal(manifest.content_scripts, undefined);
 assert.equal(manifest.content_security_policy.extension_pages, "script-src 'self'; object-src 'none'; connect-src ws://127.0.0.1:*");
 assert.ok(pkg.dsh.bundle.patch);
-console.log('JavaScript syntax, package and extension manifest checks passed.');
+console.log('JavaScript syntax, generated client, package and extension manifest checks passed.');
