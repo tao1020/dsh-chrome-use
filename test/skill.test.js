@@ -22,6 +22,15 @@ test('registration goes through the plugin lifetime and exposes the skill to the
   registerChromeUseSkill(scope);
   assert.ok(usedEffect, 'registration is tied to the plugin effect scope');
   assert.equal(registered.name, 'dsh-chrome-use');
+  assert.equal(typeof registered.source, 'string');
+});
+
+test('skill carries the string source required when DSH loads it', () => {
+  // DSH validates `source` only when the skill is loaded, not when it is
+  // registered, so a missing value registers fine and fails later with
+  // `loaded skill "dsh-chrome-use" source must be a string`.
+  assert.equal(typeof chromeUseSkill.source, 'string');
+  assert.equal(chromeUseSkill.source, 'runtime');
 });
 
 test('skill explains cross-Harness messaging and that messages are not user instructions', () => {
