@@ -6,6 +6,7 @@
 
 - 修复运行期技能加载失败：技能对象缺少 DSH 技能契约要求的 `source` 字段，注册阶段能进入技能目录，加载时却报 `loaded skill "dsh-chrome-use" source must be a string`。现在补上 `source: 'runtime'`，安装插件后该技能可以正常加载。
 - 增加回归测试，覆盖加载阶段对 `source` 字符串的要求。
+- 增加构建产物校验：`npm run check` 现在会确认 `src/client.js` 与源码及 `package.json` 版本同步，避免发布时才被 publish workflow 的 `git diff --exit-code` 拦住。
 
 ## [0.15.0] - 2026-11-19
 
