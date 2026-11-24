@@ -4,6 +4,8 @@
 
 ## 适用场景
 
+只用 DeepSeek Harness 的用户不需要这一页。
+
 - 验证某个端口能否配对。
 - 在没有 Harness 的机器上测试 bridge 命令。
 - 给其他宿主提供一个独立进程，由它自己读写 JSON。
@@ -75,20 +77,20 @@ DSH、Codex、OpenCode 各用独立端口（18791、18793、18794），互不共
 
 ## 给 Codex/OpenCode 的提示词
 
-下面两段可以直接复制。Codex 使用 18793，OpenCode 使用 18794，两者可以同时运行。两份提示词都要求常驻子进程，不要写一行命令就关闭 stdin。
+下面两段可以直接复制，提示词里的 `<仓库目录>` 换成你自己克隆仓库的实际路径（例如 `~/code/dsh-chrome-use`）。Codex 使用 18793，OpenCode 使用 18794，两者可以同时运行。两份提示词都要求常驻子进程，不要写一行命令就关闭 stdin。
 
 ### 共享前提
 
-- 工作目录固定为 `/Users/tao/code/dsh-chrome-use`，使用 Node.js 22 或 24，依赖已经安装（`node -e "import('ws')"` 能成功）。不要执行 `npm install` 或修改仓库。
-- 测试扩展已经加载在一个独立的 Chrome 测试资料里。`node scripts/fixture.mjs` 已经运行在 `http://127.0.0.1:18792/`；不要再启动第二个 fixture。
-- 扩展弹窗里的“前台模式”已经关闭。焦点是否被抢只能由用户观察，记为 MANUAL；不要为了测试主动调用 `chrome_activate`。
+- 工作目录是你克隆后的 dsh-chrome-use 仓库根目录（下文写作 `<仓库目录>`，例如 `~/code/dsh-chrome-use`），使用 Node.js 22 或 24，依赖已经安装（`node -e "import('ws')"` 能成功）。不要执行 `npm install` 或修改仓库。
+- 测试扩展已经加载在一个独立的 Chrome 测试资料里（在 `chrome://extensions` 用“加载已解压的扩展程序”选 `extension/` 目录）。`node scripts/fixture.mjs` 已经运行在 `http://127.0.0.1:18792/`；不要再启动第二个 fixture。
+- 扩展弹窗里勾选“关闭时不再确认”，“前台模式”保持默认。焦点是否被抢只能由用户观察，记为 MANUAL；不要为了测试主动调用 `chrome_activate`。
 - 只操作自己创建或用户明确交给你的标签页。不要枚举、读取或试探私人标签页。跨 Harness 占用测试需要用户提供另一个 Harness 已占用的 tabId；没有就记 SKIP，不要猜。
 - 先向常驻进程写 `{"action":"pair"}` 生成 `pairingCode`，把它交给用户粘贴到扩展弹窗。新码已包含端口，不要要求用户再填端口；不要先问用户要一个不存在的码。
 - 结束时释放自己占用的标签页，只停止自己的子进程；不要停止另一个 Harness 的进程。
 
 ### Codex（只使用 18793）
 
-> 你在做 dsh-chrome-use 的手工联调。工作目录是 `/Users/tao/code/dsh-chrome-use`；Node.js 22 或 24；依赖已经安装，不要执行 `npm install`，不要修改仓库、扩展或用户 Chrome 资料。测试扩展已加载，`node scripts/fixture.mjs` 已在 18792 运行，不要再启动第二个 fixture。扩展弹窗的“前台模式”已关闭；焦点行为只能人工观察，记 MANUAL，不要主动调用 `chrome_activate`。
+> 你在做 dsh-chrome-use 的手工联调。工作目录是你克隆的 dsh-chrome-use 仓库根目录（下文用 `<仓库目录>` 代替）；Node.js 22 或 24；依赖已经安装，不要执行 `npm install`，不要修改仓库、扩展或用户 Chrome 资料。测试扩展已加载，`node scripts/fixture.mjs` 已在 18792 运行，不要再启动第二个 fixture。扩展弹窗已勾选“关闭时不再确认”，“前台模式”保持默认；焦点行为只能人工观察，记 MANUAL，不要主动调用 `chrome_activate`。
 >
 > 用常驻子进程运行 `DSH_CHROME_USE_PORT=18793 node scripts/dev.mjs`。保持 stdin 一直打开，逐行写 JSON、逐行读输出；不要把单条命令 echo 给进程后关闭 stdin。先写 `{"action":"pair"}`，把返回的 `pairingCode` 交给用户，让用户在扩展弹窗粘贴；新码已包含端口，不要让用户手填端口。若返回里只有纯数字 `code`，说明是旧版兼容码，只在 18791 的旧扩展可用。你通过 JSON 行驱动，不要假设存在 `chrome_*` 工具或 MCP。
 >
@@ -112,7 +114,7 @@ DSH、Codex、OpenCode 各用独立端口（18791、18793、18794），互不共
 
 ### OpenCode（只使用 18794）
 
-> 你在做 dsh-chrome-use 的手工联调。工作目录是 `/Users/tao/code/dsh-chrome-use`；Node.js 22 或 24；依赖已经安装，不要执行 `npm install`，不要修改仓库、扩展或用户 Chrome 资料。测试扩展已加载，`node scripts/fixture.mjs` 已在 18792 运行，不要再启动第二个 fixture。扩展弹窗的“前台模式”已关闭；焦点行为只能人工观察，记 MANUAL，不要主动调用 `chrome_activate`。
+> 你在做 dsh-chrome-use 的手工联调。工作目录是你克隆的 dsh-chrome-use 仓库根目录（下文用 `<仓库目录>` 代替）；Node.js 22 或 24；依赖已经安装，不要执行 `npm install`，不要修改仓库、扩展或用户 Chrome 资料。测试扩展已加载，`node scripts/fixture.mjs` 已在 18792 运行，不要再启动第二个 fixture。扩展弹窗已勾选“关闭时不再确认”，“前台模式”保持默认；焦点行为只能人工观察，记 MANUAL，不要主动调用 `chrome_activate`。
 >
 > 用常驻子进程运行 `DSH_CHROME_USE_PORT=18794 node scripts/dev.mjs`。保持 stdin 一直打开，逐行写 JSON、逐行读输出；不要把单条命令 echo 给进程后关闭 stdin。先写 `{"action":"pair"}`，把返回的 `pairingCode` 交给用户，让用户在扩展弹窗粘贴；新码已包含端口，不要让用户手填端口。若返回里只有纯数字 `code`，说明是旧版兼容码，只在 18791 的旧扩展可用。你通过 JSON 行驱动，不要假设存在 `chrome_*` 工具或 MCP。
 >

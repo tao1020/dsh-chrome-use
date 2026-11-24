@@ -4,11 +4,13 @@
 
 ## npm 端配置
 
+以下步骤只适用于本仓库的维护者。
+
 在 npm 的 `dsh-chrome-use` 包设置中添加 GitHub Actions Trusted Publisher，填写：
 
 | 字段 | 值 |
 | --- | --- |
-| Organization or user | `tao1020` |
+| Organization or user | 仓库所有者（本仓库为 `tao1020`） |
 | Repository | `dsh-chrome-use` |
 | Workflow filename | `publish.yml` |
 | Environment name | `npm` |
