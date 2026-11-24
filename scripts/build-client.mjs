@@ -5,10 +5,11 @@ const readText = async (path) => (await readFile(path, 'utf8')).replace(/\r\n/g,
 const contract = (await readText('src/settings-contract.js')).replace(/^export /gm, '');
 const links = (await readText('src/links.js')).replace(/^export /gm, '');
 const layout = (await readText('src/settings-layout.js')).replace(/^export /gm, '');
+const mention = (await readText('src/mention.js')).replace(/^export /gm, '');
 const releases = (await readText('src/release-check.js')).replace(/^export /gm, '');
 const version = JSON.parse(await readText('package.json')).version;
 const client = await readText('src/settings-client.js');
-const output = `window.__ModuleLoader__.load({ id: 'dsh-chrome-use', factory: (require) => { const module = { exports: {} };\n${contract}\n${links}\n${layout}\n${releases}\nconst packageVersion = ${JSON.stringify(version)};\n${client}\nreturn module.exports; } });\n`;
+const output = `window.__ModuleLoader__.load({ id: 'dsh-chrome-use', factory: (require) => { const module = { exports: {} };\n${contract}\n${links}\n${layout}\n${mention}\n${releases}\nconst packageVersion = ${JSON.stringify(version)};\n${client}\nreturn module.exports; } });\n`;
 
 if (process.argv.includes('--check')) {
   // The publish workflow rebuilds this file and fails on any diff, so lint the

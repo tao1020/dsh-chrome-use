@@ -1,6 +1,6 @@
 {
   "name": "dsh-chrome-use",
-  "version": "0.15.1",
+  "version": "0.16.0",
   "description": "Control Google Chrome tabs from DeepSeek Harness.",
   "type": "module",
   "main": "./src/index.js",
@@ -33,6 +33,7 @@
     "client": {
       "inject": [
         "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-input-trigger",
         "@deepseek-ai/dsh-api-remotes"
       ],
       "platform": "web"
