@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
-import { parseStatus, parsePairing, remote } from '../src/settings-contract.js';
+import { parseStatus, parsePairing, parseTabs, remote, TAB_LIST_LIMIT } from '../src/settings-contract.js';
 test('settings exposes only connection metadata and rejects invalid status', () => {
   assert.deepEqual(parseStatus({connected:false,tabCount:0,extensionVersion:null,token:'secret'}),{connected:false,tabCount:0,extensionVersion:null});
   for(const value of [null,{}, {connected:true,tabCount:-1,extensionVersion:null}]) assert.throws(()=>parseStatus(value));
@@ -20,9 +20,26 @@ test('pairing responses keep the legacy code and add an optional encoded code', 
   assert.deepEqual(encoded,{code:'12345678',pairingCode:'7K3M9QAX',port:18793,expiresInSeconds:120,instructions:'enter it'});
   for(const value of [null, [], {code:'1234567',port:18791,expiresInSeconds:120,instructions:''}, {code:'12345678',port:0,expiresInSeconds:120,instructions:''}, {code:'12345678',port:18791,expiresInSeconds:0,instructions:''}, {code:'12345678',port:18791,expiresInSeconds:120,instructions:7}, {code:'12345678',pairingCode:'12345678',port:18791,expiresInSeconds:120,instructions:''}, {code:'12345678',pairingCode:'7K3M9QAI',port:18791,expiresInSeconds:120,instructions:''}]) assert.throws(()=>parsePairing(value));
 });
-test('remote contract publishes read and pair on one namespace', () => {
-  assert.deepEqual(remote.descriptors.map(descriptor=>descriptor.id),['dsh-chrome-use#chromeUseStatus/read','dsh-chrome-use#chromeUseStatus/pair']);
-  assert.deepEqual(remote.descriptors.map(descriptor=>descriptor.method),['read','pair']);
+test('tab lists keep only the fields the @ menu needs and reject anything else', () => {
+  const tab = { tabId: 7, title: 'Orders', url: 'https://shop.test/orders', attached: false, windowId: 3, audible: true };
+  assert.deepEqual(parseTabs({ connected: true, tabs: [tab], reason: null }), { connected: true, tabs: [{ tabId: 7, title: 'Orders', url: 'https://shop.test/orders', attached: false }], reason: null });
+  assert.deepEqual(parseTabs({ connected: false, tabs: [] }), { connected: false, tabs: [], reason: null });
+  for (const value of [
+    null,
+    [],
+    { connected: 'yes', tabs: [] },
+    { connected: true, tabs: {} },
+    { connected: true, tabs: [tab], reason: 'x'.repeat(301) },
+    { connected: true, tabs: [{ ...tab, tabId: 0 }] },
+    { connected: true, tabs: [{ ...tab, title: 7 }] },
+    { connected: true, tabs: [{ ...tab, url: 'chrome://settings' }] },
+    { connected: true, tabs: [{ ...tab, attached: 'no' }] },
+    { connected: true, tabs: Array.from({ length: TAB_LIST_LIMIT + 1 }, (_, index) => ({ ...tab, tabId: index + 1 })) },
+  ]) assert.throws(() => parseTabs(value));
+});
+test('remote contract publishes read, pair and list on one namespace', () => {
+  assert.deepEqual(remote.descriptors.map(descriptor=>descriptor.id),['dsh-chrome-use#chromeUseStatus/read','dsh-chrome-use#chromeUseStatus/pair','dsh-chrome-use#chromeUseStatus/list']);
+  assert.deepEqual(remote.descriptors.map(descriptor=>descriptor.method),['read','pair','list']);
   for(const descriptor of remote.descriptors) {
     assert.equal(descriptor.service,'chromeUseStatus');
     assert.equal(descriptor.namespace,'chromeUseStatus');
@@ -32,6 +49,7 @@ test('remote contract publishes read and pair on one namespace', () => {
     assert.equal(typeof descriptor.result.create, 'function');
   }
   assert.equal(remote.descriptors[1].result.create().parse({code:'12345678',port:18791,expiresInSeconds:120,instructions:''}).code,'12345678');
+  assert.equal(remote.descriptors[2].result.create().parse({connected:true,tabs:[{tabId:1,title:'t',url:'https://x.test/',attached:false}]}).tabs[0].tabId,1);
 });
 test('browser entry mounts the native settings slot and remote contract', async () => {
   let entry, registered, mounted;

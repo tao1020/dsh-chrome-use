@@ -33,7 +33,7 @@ export const chromeUseSkill = {
 ## 操作流程
 
 1. 打开新页面用 chrome_open，必须带 group（1-40 字符）。同一系列任务复用同一个组名，页面会进同一个 Chrome 标签页组。
-2. 操作已有页面时，先用 chrome_tabs 找到标签页，再用 chrome_claim 占用。一个标签页同时只能被一个会话占用；不同会话可以同时操作不同标签页。
+2. 操作已有页面时，先用 chrome_tabs 找到标签页，再用 chrome_claim 占用。一个标签页同时只能被一个会话占用；不同会话可以同时操作不同标签页。用户消息里带「[Chrome 标签页 #123]」时（用户在输入框 @ 选中的标签页），直接用其中的 tabId，不要再靠 chrome_tabs 从标题里猜；仍然要先 chrome_claim 占用，没权限时按 TAB_NOT_OWNED / TAB_BUSY 处理。
 3. 操作前先 chrome_snapshot 获取元素 ref。读正文用 format="text" 或 format="markdown"（不返回 ref，也不清空旧 ref）；元素太多或找不到时用 chrome_find 按 name/role 查找。导航或页面变化后旧 ref 会失效，需要重新读取，不能猜 ref。快照里带 frame=true 的元素在同源子框架里，点击和填写可以直接用；跨域子框架读不到。challenge 字段不为空说明页面出现验证码/人机校验，需要用户在 Chrome 里完成。
    需要整页或某个区域的正文时用 chrome_content（selector 选区域，format 可选 markdown/text/html/json，maxChars 限制长度）；需要按字段批量取列表（如每张卡片的价格、链接）时用 chrome_scrape（fields 写 "name: selector" 或 "name: selector@attr"，selector 是容器选择器时逐容器重复）。两者都能穿透 open shadow DOM，都不点击页面。
 4. 用 chrome_click（count=2 双击，button=right 右键）、chrome_fill、chrome_key（支持 meta+a、ctrl+shift+k 等组合）、chrome_scroll 执行操作；填写不会自动提交表单。

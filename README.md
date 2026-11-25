@@ -50,7 +50,13 @@ dsh plugin --profile desktop add dsh-chrome-use
 
 **连接即允许 Harness 操作此 Chrome 中的全部普通网页，包括已登录的网站。** 网页内容、截图和调试信息可能发送给你在 Harness 配置的模型服务。详见 [隐私说明](PRIVACY.md)。
 
-### 4. 多个 Harness 同时连接（可选）
+### 4. 在对话里 @ 一个标签页
+
+在输入框里打 `@`，菜单里会多出「Chrome 标签页」一组，列出当前 Chrome 里所有 http/https 页面（标题和网址）。选中一个就插入一个标签页引用；发送后 Harness 拿到的是这一页的 tabId、标题和网址，不用再从几十个标签里猜是哪一页。引用会单独成一行，并用一条 `---` 分隔线和你自己写的话隔开，所以对话记录里只有「[Chrome 标签页 #123] 《标题》 网址」加一条线，不是一大段提示词。
+
+选中的标签页仍然要先 `chrome_claim` 才能操作，因为一个标签页同时只归一个会话。「先 claim、再 snapshot」这些说明写在运行期 skill 和工具描述里，不再塞进你的消息。扩展没连接时这一组只显示一行提示，不影响其他 `@` 候选。
+
+### 5. 多个 Harness 同时连接（可选）
 
 不设置 `DSH_CHROME_USE_PORT` 时，插件自动选择端口：先试上次成功的端口（`~/.dsh/dsh-chrome-use/port.json`），再试 18791、18793..18801，跳过 18792。第一个可用端口生效，端口被占用不会让启动直接失败。设置页会显示实际端口。
 
@@ -76,7 +82,7 @@ DSH_CHROME_USE_PORT=18793 DSH_CHROME_USE_NAME=Codex dsh
 
 多个 Harness 之间还可以在后台互相留言：`chrome_send_message` 广播或按端口定向发送，`chrome_messages` 读取，对方会在下一次工具调用的结果里看到未读提示。这是异步留言板，不会打断正在执行的操作，也不会显示在扩展弹窗里。细节和限制见 [Harness 之间的留言板](docs/agent-messaging.md)。
 
-### 5. Codex、OpenCode、Workbody 和其他 Harness
+### 6. Codex、OpenCode、Workbody 和其他 Harness
 
 本包是 DSH/Cordis 插件。`package.json` 没有 MCP 入口，也没有命令行入口；把 npm 包装进 Codex 或 OpenCode，不会自动出现 `chrome_*` 工具。
 
@@ -136,7 +142,13 @@ After a successful pairing, restarting the Harness, restarting Chrome, or an ext
 
 **Connecting lets the Harness operate every normal web page in this Chrome, including sites you are logged in to.** Page content, screenshots and debugging information may be sent to the model service configured in your Harness. See [Privacy](PRIVACY.md).
 
-### 4. Several harnesses at once (optional)
+### 4. @ a tab in the conversation
+
+Type `@` in the composer and a "Chrome 标签页" group lists every http/https page open in Chrome, with its title and URL. Picking one inserts a tab reference, so the message carries that page's tabId, title and URL instead of making the model guess between dozens of tabs. The reference sits on its own line, separated from your own words by a `---` rule, so the transcript stays short: one `[Chrome 标签页 #123] 《title》 url` line and a divider, not a paragraph of instructions.
+
+The picked tab still needs `chrome_claim` before any operation, because a tab belongs to one chat at a time. That rule, and what to do on TAB_NOT_OWNED, lives in the runtime skill and the tool descriptions instead of your message. When the extension is not connected the group shows a single hint row and leaves the other `@` candidates alone.
+
+### 5. Several harnesses at once (optional)
 
 When `DSH_CHROME_USE_PORT` is not set, the plugin picks a port automatically: it first tries the last successful port (`~/.dsh/dsh-chrome-use/port.json`), then 18791 and 18793..18801, skipping 18792. The first free port wins, so a busy port no longer makes startup fail. The settings page shows the actual port.
 
@@ -162,7 +174,7 @@ Several harnesses can work on different tabs at the same time; a tab still belon
 
 Harnesses can also leave each other messages in the background: `chrome_send_message` broadcasts or targets a specific port, `chrome_messages` reads them, and the receiver sees an unread hint in the result of its next tool call. This is an asynchronous message board: it does not interrupt a running operation and is not shown in the extension popup. Details and limits: [Messages between harnesses](docs/agent-messaging.md).
 
-### 5. Codex, OpenCode, Workbody and other harnesses
+### 6. Codex, OpenCode, Workbody and other harnesses
 
 This package is a DSH/Cordis plugin. `package.json` has no MCP entry point and no command-line entry point; dropping the npm package into Codex or OpenCode will not make `chrome_*` tools appear.
 

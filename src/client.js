@@ -9,6 +9,24 @@ function parseStatus(value) {
   }
   return status;
 }
+// The @ menu lists tabs, so the payload is bounded: a page can set an arbitrary
+// title, and a busy profile can hold hundreds of tabs.
+const TAB_LIST_LIMIT = 200;
+function parseTabs(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid Chrome tab list');
+  if (typeof value.connected !== 'boolean' || !Array.isArray(value.tabs)) throw new Error('Invalid Chrome tab list');
+  if (value.reason !== undefined && value.reason !== null && (typeof value.reason !== 'string' || value.reason.length > 300)) throw new Error('Invalid Chrome tab list reason');
+  if (value.tabs.length > TAB_LIST_LIMIT) throw new Error('Chrome returned too many tabs');
+  const tabs = value.tabs.map((tab) => {
+    if (!tab || typeof tab !== 'object' || Array.isArray(tab)) throw new Error('Invalid Chrome tab');
+    if (!Number.isSafeInteger(tab.tabId) || tab.tabId < 1) throw new Error('Invalid Chrome tab id');
+    if (typeof tab.title !== 'string' || tab.title.length > 300) throw new Error('Invalid Chrome tab title');
+    if (typeof tab.url !== 'string' || !/^https?:\/\//.test(tab.url) || tab.url.length > 4096) throw new Error('Invalid Chrome tab url');
+    if (typeof tab.attached !== 'boolean') throw new Error('Invalid Chrome tab state');
+    return { tabId: tab.tabId, title: tab.title, url: tab.url, attached: tab.attached };
+  });
+  return { connected: value.connected, tabs, reason: typeof value.reason === 'string' ? value.reason : null };
+}
 const PAIRING_CODE_RE = /^[0-9A-HJKMNP-TV-Z]{8}$/;
 function parsePairing(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid pairing response');
@@ -23,11 +41,13 @@ function parsePairing(value) {
 }
 const statusCodec = { mode: 'strict', typeSymbol: 'dsh-chrome-use#ConnectionStatus', schema: { parse: parseStatus }, create: () => ({ parse: parseStatus }) };
 const pairingCodec = { mode: 'strict', typeSymbol: 'dsh-chrome-use#PairingCode', schema: { parse: parsePairing }, create: () => ({ parse: parsePairing }) };
+const tabListCodec = { mode: 'strict', typeSymbol: 'dsh-chrome-use#TabList', schema: { parse: parseTabs }, create: () => ({ parse: parseTabs }) };
 const remote = {
   package: 'dsh-chrome-use',
   descriptors: [
     { id: 'dsh-chrome-use#chromeUseStatus/read', service: 'chromeUseStatus', namespace: 'chromeUseStatus', method: 'read', invocation: { kind: 'direct' }, parameters: [], result: statusCodec },
     { id: 'dsh-chrome-use#chromeUseStatus/pair', service: 'chromeUseStatus', namespace: 'chromeUseStatus', method: 'pair', invocation: { kind: 'direct' }, parameters: [], result: pairingCodec },
+    { id: 'dsh-chrome-use#chromeUseStatus/list', service: 'chromeUseStatus', namespace: 'chromeUseStatus', method: 'list', invocation: { kind: 'direct' }, parameters: [], result: tabListCodec },
   ],
 };
 
@@ -40,6 +60,97 @@ const releasesUrl = `${repositoryUrl}/releases`;
 // status first. Keeping the order in one place makes the two cases testable.
 function settingsSectionOrder(connected) {
   return connected ? ['status', 'install', 'update'] : ['install', 'pair', 'status', 'update'];
+}
+
+// Pure helpers for the @ tab source. scripts/build-client.mjs concatenates this
+// file into the browser bundle, so it must not import anything.
+
+// The menu calls candidates() on every keystroke and the bridge is single-flight,
+// so one listing serves a short burst of keys instead of competing with tools.
+const MENTION_TTL_MS = 2000;
+const MENTION_LIMIT = 50;
+const MENTION_PREFIX = 'dsh-chrome-use:';
+
+// The input-trigger routes the chip's serializer by the source *name*, not by a
+// separate id: `serializeReference` looks the owner up with `name === source`,
+// so the value we insert MUST be this same string. Renaming it invalidates chips
+// sitting in a saved draft.
+const MENTION_SOURCE = 'Chrome 标签页';
+
+function shorten(value, limit) {
+  const text = String(value ?? '').replace(/\s+/g, ' ').trim();
+  return text.length > limit ? `${text.slice(0, limit - 1)}…` : text;
+}
+
+function mentionRef(tabId) {
+  return `${MENTION_PREFIX}${tabId}`;
+}
+
+function parseMentionRef(ref) {
+  const match = /^dsh-chrome-use:([1-9][0-9]{0,15})$/.exec(String(ref ?? ''));
+  return match ? Number(match[1]) : undefined;
+}
+
+function mentionLabel(tab) {
+  return shorten(tab.title || tab.url || `标签页 #${tab.tabId}`, 80);
+}
+
+// One row per tab, plus a single explanatory row when there is nothing to pick.
+// `value` is opaque to the menu; onPick parses it back. A hint row carries the
+// text to insert, because picking it must not leave a dangling @ token.
+function hintRow(name, description, hint, text) {
+  return { name: shorten(name, 80), description, icon: 'session', value: JSON.stringify({ hint, text }) };
+}
+
+function mentionCandidates(value, query) {
+  if (!value) return [];
+  if (!value.connected) {
+    return [hintRow('Chrome 扩展没有连接', '在 dsh-chrome-use 设置页生成配对码，再在扩展弹窗里连接', 'disconnected', mentionHintText('disconnected'))];
+  }
+  const needle = String(query ?? '').trim().toLowerCase();
+  const matched = value.tabs.filter(tab => !needle || tab.title.toLowerCase().includes(needle) || tab.url.toLowerCase().includes(needle));
+  if (!matched.length) {
+    if (!value.tabs.length) {
+      if (value.reason) return [hintRow(value.reason, '稍等一下再打开 @ 菜单', 'busy', `${value.reason}。稍等一下再试。`)];
+      return [hintRow('Chrome 里没有可操作的标签页', '先在 Chrome 里打开要操作的网页', 'empty', mentionHintText('empty'))];
+    }
+    return [hintRow('没有匹配的标签页', '换个关键词再试', 'nomatch', mentionHintText('nomatch'))];
+  }
+  const rows = matched.slice(0, MENTION_LIMIT).map(tab => ({
+    name: mentionLabel(tab),
+    description: tab.attached ? `${tab.url} · 正在调试` : tab.url,
+    icon: 'session',
+    value: JSON.stringify({ tabId: tab.tabId, title: tab.title, url: tab.url }),
+  }));
+  if (matched.length > MENTION_LIMIT) rows.push(hintRow(`还有 ${matched.length - MENTION_LIMIT} 个标签页没显示`, '继续输入可以缩小范围', 'more'));
+  return rows;
+}
+
+// Fallback text for a hint row that carries none.
+function mentionHintText(hint) {
+  if (hint === 'disconnected') return 'Chrome 扩展没有连接：请先在 dsh-chrome-use 设置页生成配对码，再在 Chrome 工具栏打开扩展粘贴并连接。';
+  if (hint === 'nomatch') return '没有匹配这个关键词的 Chrome 标签页：换个关键词再试，或者先在 Chrome 里切到要操作的页面。';
+  if (hint === 'busy') return '浏览器正忙，稍等一下再打开 @ 菜单。';
+  return '没有可以 @ 的 Chrome 标签页：先在 Chrome 里打开要操作的网页，或换个关键词再试。';
+}
+
+// This text replaces the chip in the sent message. It stays terse — the tab id
+// the tools need, plus the title and URL for orientation — and ends with a
+// Markdown rule so the user's own words sit in their own paragraph instead of
+// running into a generated sentence. The blank line before `---` matters: a
+// paragraph directly above a rule line becomes a setext heading. The rules this
+// used to spell out live in the skill and the tool descriptions.
+function mentionSerializeText(tabId, tab) {
+  const line = tab
+    ? `[Chrome 标签页 #${tabId}] 《${shorten(tab.title, 120) || '未命名页面'}》${clipUrl(tab.url)}`
+    : `[Chrome 标签页 #${tabId}]`;
+  return `${line}\n\n---\n\n`;
+}
+
+function clipUrl(value) {
+  const url = String(value ?? '');
+  if (url === '') return '';
+  return ` ${url.length > 300 ? `${url.slice(0, 299)}…` : url}`;
 }
 
 function newerVersion(latest, current) {
@@ -68,7 +179,7 @@ async function checkRelease(current, fetcher = fetch) {
   } finally { clearTimeout(timer); }
 }
 
-const packageVersion = "0.15.1";
+const packageVersion = "0.16.0";
 // Wrapped by scripts/build-client.mjs for the Harness browser module loader.
 const React = require('react');
 const { createElement: h, useState, useEffect, useRef } = React;
@@ -187,6 +298,94 @@ function StatusPage({ read, pair }) {
     h('p', null, link(repositoryUrl, '喜欢这个插件？点个 Star，让更多人发现它 ⭐')),
     settingsSectionOrder(connected).map(key => blocks[key]));
 }
+// The @ source remembers what the menu showed so serialize() still has the
+// title and URL after the pick, and can recover them after a draft reload.
+const knownTabs = new Map();
+let mentionCache = { at: 0, value: undefined };
+let mentionInflight;
+
+function withTimeout(promise, ms) {
+  let timer;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('查询超时，请确认 Harness 服务正常后重试。')), ms); }),
+  ]).finally(() => clearTimeout(timer));
+}
+
+async function listTabs(scope) {
+  if (mentionCache.value && Date.now() - mentionCache.at < MENTION_TTL_MS) return mentionCache.value;
+  if (mentionInflight) return mentionInflight;
+  mentionInflight = (async () => {
+    try {
+      const result = await scope.remote.chromeUseStatus.list();
+      if (!result) throw new Error('Harness 没有返回标签页列表');
+      if (!result.ok) {
+        const failure = result.error ?? {};
+        throw new Error(`[${failure.code ?? 'unknown'}] ${failure.message ?? 'Harness 拒绝了标签页查询'}`);
+      }
+      const value = parseTabs(result.value);
+      mentionCache = { at: Date.now(), value };
+      for (const tab of value.tabs) knownTabs.set(tab.tabId, { tabId: tab.tabId, title: tab.title, url: tab.url });
+      return value;
+    } finally { mentionInflight = undefined; }
+  })();
+  return mentionInflight;
+}
+
+function createMentionSource(scope) {
+  return {
+    trigger: '@',
+    name: MENTION_SOURCE,
+    order: 50,
+    async candidates(_session, req) {
+      try {
+        return mentionCandidates(await withTimeout(listTabs(scope), 6000), req?.query ?? '');
+      } catch (error) {
+        // The menu is not the place for a thrown error: one readable row instead.
+        return [{ name: '无法读取 Chrome 标签页', description: String(error?.message ?? error), icon: 'session', value: JSON.stringify({ hint: 'disconnected' }) }];
+      }
+    },
+    onPick(pick) {
+      let payload = {};
+      try { payload = JSON.parse(String(pick?.candidate?.value ?? '{}')) ?? {}; } catch {}
+      if (payload && typeof payload.hint === 'string') {
+        if (payload.hint === 'more') return 'handled';
+        return { text: typeof payload.text === 'string' && payload.text ? payload.text : mentionHintText(payload.hint) };
+      }
+      const tabId = Number(payload?.tabId);
+      if (!Number.isSafeInteger(tabId) || tabId < 1) return undefined;
+      const tab = { tabId, title: String(payload.title ?? ''), url: String(payload.url ?? '') };
+      knownTabs.set(tabId, tab);
+      return { insert: { source: MENTION_SOURCE, ref: mentionRef(tabId), label: mentionLabel(tab), appearance: 'session', clipboardText: tab.url || mentionRef(tabId) } };
+    },
+    codec: {
+      clipboardText(ref) {
+        const tabId = parseMentionRef(ref);
+        return (tabId === undefined ? undefined : knownTabs.get(tabId)?.url) || String(ref);
+      },
+      // The contract blocks the send when this rejects, so it always resolves.
+      async serialize(ref) {
+        const tabId = parseMentionRef(ref);
+        if (tabId === undefined) return `[Chrome 标签页] ${String(ref)}`;
+        try {
+          let tab = knownTabs.get(tabId);
+          if (!tab) {
+            const value = await withTimeout(listTabs(scope), 4000);
+            const found = value.tabs.find(candidate => candidate.tabId === tabId);
+            if (found) {
+              tab = { tabId: found.tabId, title: found.title, url: found.url };
+              knownTabs.set(tabId, tab);
+            }
+          }
+          return mentionSerializeText(tabId, tab);
+        } catch {
+          return mentionSerializeText(tabId, knownTabs.get(tabId));
+        }
+      },
+    },
+  };
+}
+
 module.exports.inject = ['slots', 'remote'];
 module.exports.apply = function(ctx) {
   ctx.effect(async () => await ctx.remote.$mount(remote));
@@ -194,6 +393,25 @@ module.exports.apply = function(ctx) {
     const read = () => scope.remote.chromeUseStatus.read();
     const pair = () => scope.remote.chromeUseStatus.pair();
     scope.slots.inject('settings.section', () => scope.slots.register({ name: 'settings.section', id: 'dsh-chrome-use', order: 30, label: () => 'dsh-chrome-use', inject: () => ({ read, pair }) }, StatusPage));
+  });
+  // The @ source is optional on purpose: a Harness without the input-trigger
+  // service must still get the settings page, so this is a dynamic inject
+  // rather than a module-level dependency.
+  ctx.inject(['remote.chromeUseStatus', 'inputTriggers'], (scope) => {
+    // Cordis exposes services as properties, and some client builds only answer
+    // through ctx.get(); accept either so the menu is not silently empty.
+    const triggers = scope.inputTriggers ?? (typeof scope.get === 'function' ? scope.get('inputTriggers') : undefined);
+    if (!triggers || typeof triggers.registerSource !== 'function') return;
+    ctx.effect(() => {
+      try {
+        return triggers.registerSource(createMentionSource(scope));
+      } catch (error) {
+        // A duplicate group name (another plugin already claims it) must not
+        // take the settings page down with it.
+        console.warn('dsh-chrome-use: @ tab source was not registered', error);
+        return undefined;
+      }
+    }, 'dsh-chrome-use: @ tabs');
   });
 };
 

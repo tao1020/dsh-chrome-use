@@ -116,6 +116,94 @@ function StatusPage({ read, pair }) {
     h('p', null, link(repositoryUrl, '喜欢这个插件？点个 Star，让更多人发现它 ⭐')),
     settingsSectionOrder(connected).map(key => blocks[key]));
 }
+// The @ source remembers what the menu showed so serialize() still has the
+// title and URL after the pick, and can recover them after a draft reload.
+const knownTabs = new Map();
+let mentionCache = { at: 0, value: undefined };
+let mentionInflight;
+
+function withTimeout(promise, ms) {
+  let timer;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('查询超时，请确认 Harness 服务正常后重试。')), ms); }),
+  ]).finally(() => clearTimeout(timer));
+}
+
+async function listTabs(scope) {
+  if (mentionCache.value && Date.now() - mentionCache.at < MENTION_TTL_MS) return mentionCache.value;
+  if (mentionInflight) return mentionInflight;
+  mentionInflight = (async () => {
+    try {
+      const result = await scope.remote.chromeUseStatus.list();
+      if (!result) throw new Error('Harness 没有返回标签页列表');
+      if (!result.ok) {
+        const failure = result.error ?? {};
+        throw new Error(`[${failure.code ?? 'unknown'}] ${failure.message ?? 'Harness 拒绝了标签页查询'}`);
+      }
+      const value = parseTabs(result.value);
+      mentionCache = { at: Date.now(), value };
+      for (const tab of value.tabs) knownTabs.set(tab.tabId, { tabId: tab.tabId, title: tab.title, url: tab.url });
+      return value;
+    } finally { mentionInflight = undefined; }
+  })();
+  return mentionInflight;
+}
+
+function createMentionSource(scope) {
+  return {
+    trigger: '@',
+    name: MENTION_SOURCE,
+    order: 50,
+    async candidates(_session, req) {
+      try {
+        return mentionCandidates(await withTimeout(listTabs(scope), 6000), req?.query ?? '');
+      } catch (error) {
+        // The menu is not the place for a thrown error: one readable row instead.
+        return [{ name: '无法读取 Chrome 标签页', description: String(error?.message ?? error), icon: 'session', value: JSON.stringify({ hint: 'disconnected' }) }];
+      }
+    },
+    onPick(pick) {
+      let payload = {};
+      try { payload = JSON.parse(String(pick?.candidate?.value ?? '{}')) ?? {}; } catch {}
+      if (payload && typeof payload.hint === 'string') {
+        if (payload.hint === 'more') return 'handled';
+        return { text: typeof payload.text === 'string' && payload.text ? payload.text : mentionHintText(payload.hint) };
+      }
+      const tabId = Number(payload?.tabId);
+      if (!Number.isSafeInteger(tabId) || tabId < 1) return undefined;
+      const tab = { tabId, title: String(payload.title ?? ''), url: String(payload.url ?? '') };
+      knownTabs.set(tabId, tab);
+      return { insert: { source: MENTION_SOURCE, ref: mentionRef(tabId), label: mentionLabel(tab), appearance: 'session', clipboardText: tab.url || mentionRef(tabId) } };
+    },
+    codec: {
+      clipboardText(ref) {
+        const tabId = parseMentionRef(ref);
+        return (tabId === undefined ? undefined : knownTabs.get(tabId)?.url) || String(ref);
+      },
+      // The contract blocks the send when this rejects, so it always resolves.
+      async serialize(ref) {
+        const tabId = parseMentionRef(ref);
+        if (tabId === undefined) return `[Chrome 标签页] ${String(ref)}`;
+        try {
+          let tab = knownTabs.get(tabId);
+          if (!tab) {
+            const value = await withTimeout(listTabs(scope), 4000);
+            const found = value.tabs.find(candidate => candidate.tabId === tabId);
+            if (found) {
+              tab = { tabId: found.tabId, title: found.title, url: found.url };
+              knownTabs.set(tabId, tab);
+            }
+          }
+          return mentionSerializeText(tabId, tab);
+        } catch {
+          return mentionSerializeText(tabId, knownTabs.get(tabId));
+        }
+      },
+    },
+  };
+}
+
 module.exports.inject = ['slots', 'remote'];
 module.exports.apply = function(ctx) {
   ctx.effect(async () => await ctx.remote.$mount(remote));
@@ -123,5 +211,24 @@ module.exports.apply = function(ctx) {
     const read = () => scope.remote.chromeUseStatus.read();
     const pair = () => scope.remote.chromeUseStatus.pair();
     scope.slots.inject('settings.section', () => scope.slots.register({ name: 'settings.section', id: 'dsh-chrome-use', order: 30, label: () => 'dsh-chrome-use', inject: () => ({ read, pair }) }, StatusPage));
+  });
+  // The @ source is optional on purpose: a Harness without the input-trigger
+  // service must still get the settings page, so this is a dynamic inject
+  // rather than a module-level dependency.
+  ctx.inject(['remote.chromeUseStatus', 'inputTriggers'], (scope) => {
+    // Cordis exposes services as properties, and some client builds only answer
+    // through ctx.get(); accept either so the menu is not silently empty.
+    const triggers = scope.inputTriggers ?? (typeof scope.get === 'function' ? scope.get('inputTriggers') : undefined);
+    if (!triggers || typeof triggers.registerSource !== 'function') return;
+    ctx.effect(() => {
+      try {
+        return triggers.registerSource(createMentionSource(scope));
+      } catch (error) {
+        // A duplicate group name (another plugin already claims it) must not
+        // take the settings page down with it.
+        console.warn('dsh-chrome-use: @ tab source was not registered', error);
+        return undefined;
+      }
+    }, 'dsh-chrome-use: @ tabs');
   });
 };
