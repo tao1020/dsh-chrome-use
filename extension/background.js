@@ -70,11 +70,39 @@ async function applyMode() {
   controller.foregroundMode = foregroundMode !== false;
 }
 
-const controller = new BrowserController(chrome, (tabId, reason) => {
+// Closing a tab discards its debugger state without an onDetach callback, so
+// remember which path closed it. A later failure on the same tab can then say
+// whether this extension closed it and where the close came from.
+const recentCloses = new Map();
+const CLOSE_NOTE_MS = 60000;
+function noteClose(tabId, source) {
+  recentCloses.delete(tabId);
+  recentCloses.set(tabId, { source, at: Date.now() });
+  if (recentCloses.size > 100) recentCloses.delete(recentCloses.keys().next().value);
+}
+function closeSourceFor(tabId) {
+  const note = recentCloses.get(tabId);
+  if (!note) return null;
+  if (Date.now() - note.at > CLOSE_NOTE_MS) { recentCloses.delete(tabId); return null; }
+  return note.source;
+}
+
+const controller = new BrowserController(chrome, (tabId, reason, details = {}) => {
   const owner = leases.get(tabId)?.client;
-  leases.release(tabId);
+  if (!owner) return;
+  // A removed tab can never be reused. Every other detach may only mean Chrome
+  // dropped the target of a tab that is still open (discard, window move), so
+  // keep the lease and let the same session re-claim instead of handing a live
+  // tab to another session mid-task.
+  if (details.tabExists === false || reason === 'released') leases.release(tabId, owner);
+  const closeSource = closeSourceFor(tabId);
   if (owner?.connected && owner.socket?.readyState === WebSocket.OPEN) {
-    owner.socket.send(JSON.stringify({ type: 'detached', tabId, ...(reason ? { reason: String(reason).slice(0, 40) } : {}) }));
+    owner.socket.send(JSON.stringify({
+      type: 'detached', tabId,
+      ...(reason ? { reason: String(reason).slice(0, 40) } : {}),
+      ...(details.tabExists === undefined ? {} : { tabExists: details.tabExists }),
+      ...(closeSource ? { closeSource } : {}),
+    }));
   }
 });
 const idleTabs = createIdleTabs(chrome.storage.session);
@@ -343,6 +371,7 @@ async function sweepIdleTabs() {
     try {
       // This close is opt-in through the popup switch, so it does not ask the
       // page's beforeunload guard. Manual chrome_close still follows its own setting.
+      noteClose(tabId, 'idle');
       await controller.closeTab(tabId, undefined, { force: true, attachIfNeeded: true });
       clients.get(record.port)?.opened.delete(tabId);
       await idleTabs.forget(tabId);
@@ -383,6 +412,7 @@ async function drainClient(client, { closeOpened = false } = {}) {
         const wasOpened = closeOpened && client.opened.has(tabId);
         if (wasOpened) {
           // Close before detaching so the beforeunload event is still visible.
+          noteClose(tabId, `disconnect ${client.port}`);
           try { await controller.closeTab(tabId, undefined, { force: forceClose, attachIfNeeded: true }); }
           catch (error) {
             const message = String(error?.message ?? error).slice(0, 2000);
@@ -423,6 +453,7 @@ async function drainClient(client, { closeOpened = false } = {}) {
         if (owner && owner !== client) { client.opened.delete(tabId); continue; }
         // A detached tab has no dialog listener, so closeTab briefly reattaches
         // for the forced close; a failure still falls back to plain removal.
+        noteClose(tabId, `disconnect ${client.port}`);
         try { await controller.closeTab(tabId, undefined, { force: forceClose, attachIfNeeded: true }); }
         catch (error) {
           const message = String(error?.message ?? error).slice(0, 2000);
@@ -734,6 +765,7 @@ async function cleanupOpenedTabs(client, args, signal) {
       // Close while the debugger session is still attached so a beforeunload
       // prompt can be accepted. closeTab removes the tab and drops local state;
       // the lease is released explicitly below.
+      noteClose(tabId, `cleanup ${client.port}`);
       await controller.closeTab(tabId, signal, { force: forceClose, attachIfNeeded: true });
       leases.release(tabId, client);
       client.opened.delete(tabId);
@@ -847,6 +879,7 @@ async function handleCommand(client, message) {
     const commandArgs = action === 'close' && args.force === undefined
       ? { ...args, force: await forceCloseBeforeUnload() }
       : args;
+    if (action === 'close' && tabId !== undefined) noteClose(tabId, `chat ${client.port}`);
     response = { result: action === 'cleanup' ? await cleanupOpenedTabs(client, args, cancellation.signal) : await controller.execute(action, commandArgs, cancellation.signal, options) };
     if (action === 'close' && tabId !== undefined) { client.opened.delete(tabId); forgetIdleTab(tabId); }
   } catch (error) {

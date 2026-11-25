@@ -24,7 +24,15 @@ async function fixture(t, initial = {}) {
   const heldReady = new Set();
   let autoReady = true;
   let nextTabId = 9;
-  const event = name => ({ addListener(fn) { listeners[name] = fn; } });
+  // Chrome keeps every listener. Keeping them all matters for onRemoved: the
+  // controller tracks debugger state and background.js tracks idle state.
+  const event = name => ({
+    addListener(fn) {
+      const registered = listeners[`${name}Listeners`] ??= [];
+      registered.push(fn);
+      listeners[name] = (...args) => { for (const each of registered) each(...args); };
+    },
+  });
   const originalChrome = globalThis.chrome;
   const originalSocket = globalThis.WebSocket;
   const runtime = {
@@ -562,19 +570,34 @@ test('failed native cleanup quarantines the tab instead of releasing it', async 
   assert.match(status.connections.find(row => row.port === 18791).error, /DETACH_FAILED/);
 });
 
-test('a detach notice reaches only the lease owner; unknown detach is silent', async t => {
+test('a detach notice reaches only the lease owner; a live tab keeps its lease', async t => {
   const { commandOn, socketFor, listeners, settled } = await twoHarnesses(t);
   await commandOn(18791, 'a-claim', 'claim', { tabId: 7 });
   listeners.detach({ tabId: 7 }, 'replaced_with_devtools');
   await settled();
-  assert.ok(socketFor(18791).sent.some(item => item.type === 'detached' && item.tabId === 7));
+  const notice = socketFor(18791).sent.find(item => item.type === 'detached' && item.tabId === 7);
+  assert.ok(notice);
+  assert.equal(notice.tabExists, true);
   assert.equal(socketFor(18793).sent.some(item => item.type === 'detached' && item.tabId === 7), false);
   listeners.detach({ tabId: 99 }, 'target_closed');
   await settled();
   assert.equal(socketFor(18791).sent.some(item => item.type === 'detached' && item.tabId === 99), false);
   assert.equal(socketFor(18793).sent.some(item => item.type === 'detached' && item.tabId === 99), false);
+  // The tab still exists, so the original owner keeps it against other Harnesses.
   await commandOn(18793, 'b-after-detach', 'claim', { tabId: 7 });
-  assert.equal(resultOf(socketFor(18793), 'b-after-detach').result.attached, true);
+  assert.match(resultOf(socketFor(18793), 'b-after-detach').error, /TAB_OWNED_BY_ANOTHER_HARNESS/);
+});
+
+test('closing a leased tab releases it for another Harness', async t => {
+  const { commandOn, socketFor, listeners, settled } = await twoHarnesses(t);
+  await commandOn(18791, 'a-claim', 'claim', { tabId: 7 });
+  assert.equal(resultOf(socketFor(18791), 'a-claim').result.attached, true);
+  listeners.removed(7);
+  await settled();
+  const notice = socketFor(18791).sent.find(item => item.type === 'detached' && item.tabId === 7);
+  assert.equal(notice.tabExists, false);
+  await commandOn(18793, 'b-after-close', 'claim', { tabId: 7 });
+  assert.equal(resultOf(socketFor(18793), 'b-after-close').result.attached, true);
 });
 
 test('two simultaneous pairings are serialized and neither token is lost', async t => {

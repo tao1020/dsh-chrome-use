@@ -10,7 +10,8 @@
     "tabGroups",
     "storage",
     "alarms",
-    "downloads"
+    "downloads",
+    "webNavigation"
   ],
   "background": {
     "service_worker": "background.js",

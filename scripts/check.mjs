@@ -14,7 +14,7 @@ const pkg = JSON.parse(await readFile('package.json', 'utf8'));
 const manifest = JSON.parse(await readFile('extension/manifest.json', 'utf8'));
 assert.equal(manifest.version, pkg.version);
 assert.equal(manifest.manifest_version, 3);
-assert.deepEqual(manifest.permissions, ['debugger', 'tabs', 'tabGroups', 'storage', 'alarms', 'downloads']);
+assert.deepEqual(manifest.permissions, ['debugger', 'tabs', 'tabGroups', 'storage', 'alarms', 'downloads', 'webNavigation']);
 assert.equal(manifest.host_permissions, undefined);
 assert.equal(manifest.content_scripts, undefined);
 assert.equal(manifest.content_security_policy.extension_pages, "script-src 'self'; object-src 'none'; connect-src ws://127.0.0.1:*");
