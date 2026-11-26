@@ -45,11 +45,11 @@
 
 `chrome_claim` 和 `chrome_open` 失败时报 `ATTACH_FAILED at <阶段>: tab <id> (<协议>://<域名>) <Chrome 原始原因>`。阶段是 `attach`，或者 `Page.enable` 这类 CDP 域名启用步骤；括号里是插件当时解析到的标签页位置，只保留协议和域名，不含路径和查询串，用来判断这个 id 是否还指向你列出的页面。
 
-- `Cannot access a chrome-extension:// URL of different extension`：Chrome 拒绝调试，因为这个标签页暴露了另一个扩展的 URL。可能是整页由别的扩展接管（PDF 阅读器、替换新标签页的扩展），也可能只是内嵌的扩展页面，不能据此断定页面归属。换一个普通标签页重新打开同一网址只是需要验证的规避方式，不保证有效。
+- `Cannot access a chrome-extension:// URL of different extension`：Chrome 拒绝调试，因为这个标签页暴露了另一个扩展的 URL。可能是整页由别的扩展接管（PDF 阅读器、替换新标签页的扩展），也可能只是内嵌的扩展页面。插件会用 `chrome.webNavigation.getAllFrames` 找出最多 5 个属于其他扩展的 frame，把 `frameId`、`parentFrameId`、URL 和扩展 ID 写进错误，并给出 `chrome://extensions/?id=<id>` 定位地址；按这个地址停用对应扩展后刷新页面再 claim，或改用没装该扩展的 Chrome 配置。如果 Chrome 没暴露 frame 树（例如标签页刚被关闭），错误会说明 frame 列表读不到。`chrome_doctor` 在未 attach 时也会返回同样的 `extensionFrames`，不必先 claim。
 - `Another debugger is already attached`：这个标签页已被别的调试会话占用。先关掉 DevTools 或另一个扩展的调试会话。
 未占用标签页有两个检查层级，错误码不同，处理方式一样（先 `chrome_tabs` 确认页面还在，再 `chrome_claim`）：
 
-- `TAB_NOT_OWNED: claim the tab first`：Harness 自己的占用表里没有这个标签页——从未 claim，或已经 `chrome_release`。这是“未 claim 或 release 后继续操作”的预期错误码。消息可能带诊断后缀 `(Chrome detached this tab <n>s ago: <reason>)`，`reason` 是 Chrome 给出的解除原因，例如 `target_closed`、`replaced_with_devtools`，也可能是插件自己记录的 `released`。
+- `TAB_NOT_OWNED: claim the tab first`：Harness 自己的占用表里没有这个标签页——从未 claim，或已经 `chrome_release`。这是“未 claim 或 release 后继续操作”的预期错误码。消息可能带诊断后缀 `(Chrome detached this tab <n>s ago: <说明>)`，说明由 Chrome 原因翻译而来：`target_closed` 加标签页已关闭时会写 `the tab was closed by <来源>`，来源可能是 `idle`、`chat <port>`、`cleanup <port>` 或 `disconnect <port>`；标签页还开着时会写 target 被丢弃但 tab 仍在、占用仍保留，重新 claim 即可；`replaced_with_devtools` 会写 DevTools 打开并接管了调试会话，`replaced_with_devtools_extension` 会写另一个扩展 attach 了调试器，`canceled_by_user` 会写用户取消了调试提示。插件自己 release 时写 `released`。
 - `TAB_NOT_LEASED: claim the tab first`：Harness 认为仍然持有这个标签页，但扩展侧的租约已经丢失，例如重载扩展之后旧连接还留着。看到它同样先确认页面、再重新 claim。
 - 已经 claim 的页面刷新后使用旧 `ref`，报 `STALE_ELEMENT`；被另一个 Harness 占用的页面报 `TAB_OWNED_BY_ANOTHER_HARNESS`。
 - 失败的命令不会留下占用，可以直接重新 `chrome_claim`。

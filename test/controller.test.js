@@ -986,6 +986,48 @@ test('attach failures without the extension wording keep the message plain', asy
   );
 });
 
+test('a blocked attach names the embedded extension frame when Chrome exposes it', async () => {
+  const { controller, api } = fixture();
+  api.runtime = { id: 'self' };
+  const other = 'b'.repeat(32);
+  api.webNavigation = {
+    getAllFrames: async () => [
+      { frameId: 0, parentFrameId: -1, url: 'https://example.com/' },
+      { frameId: 3, parentFrameId: 0, url: `chrome-extension://${other}/inject.html?x=1` },
+      { frameId: 4, parentFrameId: 0, url: 'chrome-extension://self/own.html' },
+    ],
+  };
+  api.debugger.attach = async () => { throw new Error('Cannot access a chrome-extension:// URL of different extension'); };
+  await assert.rejects(controller.execute('claim', { tabId: 7 }), error => {
+    assert.match(error.message, /embedded frame belongs to another extension/);
+    assert.match(error.message, new RegExp(`chrome-extension://${other}/inject.html \\(frame 3, parent 0\\)`));
+    assert.match(error.message, new RegExp(`chrome://extensions/\\?id=${other}`));
+    assert.doesNotMatch(error.message, /own\.html/);
+    return true;
+  });
+});
+
+test('a blocked attach with no frame tree says the frame list could not be read', async () => {
+  const { controller, api } = fixture();
+  api.webNavigation = { getAllFrames: async () => { throw new Error('No tab with id: 7.'); } };
+  api.debugger.attach = async () => { throw new Error('Cannot access a chrome-extension:// URL of different extension'); };
+  await assert.rejects(
+    controller.execute('claim', { tabId: 7 }),
+    /the frame list could not be read, so check chrome:\/\/extensions/,
+  );
+});
+
+
+test('a blocked attach with no extension frames in the tree asks for a reload', async () => {
+  const { controller, api } = fixture();
+  api.webNavigation = { getAllFrames: async () => [{ frameId: 0, parentFrameId: -1, url: 'https://example.com/' }] };
+  api.debugger.attach = async () => { throw new Error('Cannot access a chrome-extension:// URL of different extension'); };
+  await assert.rejects(
+    controller.execute('claim', { tabId: 7 }),
+    /no longer shows that frame; it may have navigated away, so reload the page and retry/,
+  );
+});
+
 test('tabLocation reports only the scheme and host', () => {
   assert.equal(tabLocation('https://dba.example.com/path?token=1#x'), 'https://dba.example.com');
   assert.equal(tabLocation('chrome-extension://abcdefghijklmnop/newtab.html'), 'chrome-extension://abcdefghijklmnop');
@@ -1007,11 +1049,23 @@ test('a failing domain enable names the stage instead of the bare attach step', 
 test('a Chrome initiated detach passes its reason to the listener', async () => {
   const { api, listeners } = fixture();
   const notifications = [];
-  const controller = new BrowserController(api, (tabId, reason) => notifications.push([tabId, reason]));
+  const controller = new BrowserController(api, (tabId, reason, details) => notifications.push([tabId, reason, details]));
   await controller.execute('claim', { tabId: 7 });
   listeners.detach({ tabId: 7 }, 'replaced_with_devtools');
-  assert.deepEqual(notifications, [[7, 'replaced_with_devtools']]);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(notifications, [[7, 'replaced_with_devtools', { tabExists: true }]]);
   assert.equal(controller.attached.has(7), false);
+});
+
+test('a Chrome detach reports a tab that no longer exists', async () => {
+  const { api, listeners } = fixture();
+  const notifications = [];
+  const controller = new BrowserController(api, (tabId, reason, details) => notifications.push([tabId, reason, details]));
+  await controller.execute('claim', { tabId: 7 });
+  api.tabs.get = async () => { throw new Error('No tab with id: 7.'); };
+  listeners.detach({ tabId: 7 }, 'target_closed');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(notifications, [[7, 'target_closed', { tabExists: false }]]);
 });
 
 test('wait_response resolves a response that arrives after the call started', async () => {
@@ -1099,6 +1153,22 @@ test('doctor works without a tab and reports page health with one', async () => 
   assert.equal(report.url, 'https://example.com/');
   assert.equal(report.revision, 0);
   assert.deepEqual(report.network.pending, 0);
+});
+
+test('doctor explains an unattached tab and lists blocking extension frames', async () => {
+  const { controller, api } = fixture();
+  const other = 'c'.repeat(32);
+  api.webNavigation = { getAllFrames: async () => [{ frameId: 3, parentFrameId: 0, url: `chrome-extension://${other}/inject.html` }] };
+  const report = await controller.execute('doctor', { tabId: 7 });
+  assert.equal(report.attached, false);
+  assert.equal(report.exists, true);
+  assert.equal(report.extensionFrames[0].extensionId, other);
+  assert.match(report.note, /Claim it again/);
+  api.tabs.get = async () => { throw new Error('No tab with id: 7.'); };
+  assert.deepEqual(
+    await controller.execute('doctor', { tabId: 7 }),
+    { tabId: 7, exists: false, attached: false, note: 'This tab no longer exists. Claim another tab; if the page reopened, Chrome gave it a new tab id.' },
+  );
 });
 
 test('history lists recorded actions and their failures without typed text', async () => {

@@ -25,13 +25,25 @@ export function tabLocation(value) {
   } catch { return 'unparseable'; }
 }
 
-export function attachFailure(error, tabId, url, stage = 'attach') {
+// Chrome refuses a tab that exposes another extension's URL, and the usual
+// cause is one injected iframe. Name the frame and the owning extension so the
+// caller does not have to guess which extension to disable.
+export function extensionHint(frames) {
+  if (frames === undefined) {
+    return '; Chrome blocked debugging because the tab exposes another extension\'s URL, possibly from an embedded frame; the frame list could not be read, so check chrome://extensions and reload the page after disabling the extension';
+  }
+  if (!frames.length) {
+    return '; Chrome blocked debugging because the tab exposes another extension\'s URL, but the frame list no longer shows that frame; it may have navigated away, so reload the page and retry';
+  }
+  const listed = frames.map(frame => `${frame.url} (frame ${frame.frameId}, parent ${frame.parentFrameId})`).join('; ');
+  const ids = [...new Set(frames.map(frame => frame.extensionId).filter(Boolean))];
+  const owners = ids.length ? `; extension${ids.length > 1 ? 's' : ''} ${ids.join(', ')}` : '';
+  return `; Chrome blocked debugging because an embedded frame belongs to another extension: ${listed}${owners}; open chrome://extensions/?id=${ids[0] ?? ''} and disable it, or claim the tab in a Chrome profile without that extension`;
+}
+
+export function attachFailure(error, tabId, url, stage = 'attach', frames) {
   const reason = clip(error?.message ?? error, 300);
-  // Chrome refuses a tab that exposes another extension's URL. That can be an
-  // embedded frame as well as the top-level page, so do not name the owner.
-  const hint = /chrome-extension:\/\/ URL of different extension/i.test(reason)
-    ? '; Chrome blocked debugging because the tab exposes another extension\'s URL, which can also come from an embedded frame; open the page in a normal tab and claim that one'
-    : '';
+  const hint = /chrome-extension:\/\/ URL of different extension/i.test(reason) ? extensionHint(frames) : '';
   return new Error(`ATTACH_FAILED at ${stage}: tab ${tabId} (${tabLocation(url)}) ${reason}${hint}`);
 }
 
@@ -202,18 +214,60 @@ export class BrowserController {
     this.chooserPendingMs = 30000;
     this.chooserWaitMs = 500;
     this.attached = new Map();
+    // Tabs whose Chrome target vanished while the tab stayed open. Chrome does
+    // not announce their later close with another detach, so onRemoved must
+    // finish that notification without double-reporting an explicit release.
+    this.liveDetached = new Set();
     // Native Chrome promises outlive our timeouts. Do not attach a new session
     // while a previous native cleanup can still detach it.
     this.pendingCleanup = new Map();
     api.debugger.onDetach.addListener(({ tabId }, reason) => {
       clearTimeout(this.attached.get(tabId)?.chooserTimer);
-      if (this.attached.delete(tabId)) detached(tabId, reason);
+      if (!this.attached.delete(tabId)) return;
+      // Detach is not always a close: Chrome drops the target when it discards a
+      // tab or moves it between windows. Tell the owner whether the tab still
+      // exists, so a live tab keeps its lease and the same chat can re-claim it.
+      const notify = tabExists => {
+        if (tabExists) this.liveDetached.add(tabId);
+        try { detached(tabId, reason, { tabExists }); } catch {}
+      };
+      this.api.tabs.get(tabId).then(() => notify(true), () => notify(false));
     });
     api.tabs.onRemoved.addListener(tabId => {
       clearTimeout(this.attached.get(tabId)?.chooserTimer);
-      if (this.attached.delete(tabId)) detached(tabId, 'target_closed');
+      const wasAttached = this.attached.delete(tabId);
+      const wasLive = this.liveDetached.delete(tabId);
+      // A removed tab can never be reclaimed. Report it when it was attached or
+      // when an earlier detach kept its lease for a still-open tab.
+      if (!wasAttached && !wasLive) return;
+      try { detached(tabId, 'target_closed', { tabExists: false }); } catch {}
     });
     api.debugger.onEvent.addListener((target, method, params) => this.event(target, method, params));
+  }
+
+  // Frames are the only reliable way to name the blocker: chrome.debugger
+  // targets carry no tabId for iframes. Read them lazily after a failed attach
+  // and bound the read so diagnostics never delay the real error for long.
+  async extensionFrames(tabId) {
+    const getAllFrames = this.api.webNavigation?.getAllFrames;
+    if (typeof getAllFrames !== 'function') return undefined;
+    let frames;
+    try {
+      const call = async () => getAllFrames({ tabId });
+      frames = await bounded(call(), undefined, 'webNavigation.getAllFrames', 800);
+    } catch { return undefined; }
+    if (!Array.isArray(frames)) return undefined;
+    const own = this.api.runtime?.id;
+    const found = [];
+    for (const frame of frames) {
+      let url;
+      try { url = new URL(frame?.url); } catch { continue; }
+      if (url.protocol !== 'chrome-extension:') continue;
+      if (own && url.host === own) continue;
+      found.push({ frameId: frame.frameId, parentFrameId: frame.parentFrameId, url: clip(`${url.protocol}//${url.host}${url.pathname}`, 160), extensionId: url.host });
+      if (found.length === 5) break;
+    }
+    return found;
   }
 
   trackCleanup(tabId, promise) {
@@ -330,9 +384,12 @@ export class BrowserController {
     try { await bounded(attachment, signal, 'attach'); }
     catch (error) {
       this.trackCleanup(tabId, attachment.then(() => this.api.debugger.detach({ tabId }), () => {}));
-      throw attachFailure(error, tabId, currentUrl, 'attach');
+      const blocked = /chrome-extension:\/\/ URL of different extension/i.test(String(error?.message ?? error));
+      const frames = blocked && !signal?.aborted ? await this.extensionFrames(tabId) : undefined;
+      throw attachFailure(error, tabId, currentUrl, 'attach', frames);
     }
     this.attached.set(tabId, { refs: new Map(), revision: 0, logs: [], logSeq: 0, requests: [], dialog: null, chooser: null, chooserTimer: null, loadResolve: null, lastNetworkActivity: Date.now(), networkInFlight: 0, networkRequests: new Map(), mainFrameId: null, actions: [], actionSeq: 0, challenge: null, emulation: null, acceptBeforeUnload: false });
+    this.liveDetached.delete(tabId);
     let stage = 'attach';
     try {
       for (const domain of ['Page', 'DOM', 'Accessibility', 'Runtime', 'Network']) {
@@ -838,7 +895,23 @@ export class BrowserController {
     if (action === 'doctor') {
       if (tabId === undefined) return { tabId: null, attached: false, note: 'No tab given: this reports host-side checks only.' };
       const state = this.attached.get(tabId);
-      if (!state) throw new Error('TAB_NOT_ATTACHED: claim the tab again');
+      if (!state) {
+        // An unattached tab is exactly when this report is most useful: name
+        // the extension frames that can block the next claim instead of only
+        // failing the call.
+        let tab;
+        try { tab = await bounded(this.api.tabs.get(tabId), signal, 'tabs.get'); }
+        catch (error) {
+          if (signal.aborted) throw error;
+          return { tabId, exists: false, attached: false, note: 'This tab no longer exists. Claim another tab; if the page reopened, Chrome gave it a new tab id.' };
+        }
+        const frames = await this.extensionFrames(tabId);
+        return {
+          tabId, exists: true, url: clip(tab.url, 4096), title: clip(tab.title, 300), attached: false,
+          discarded: Boolean(tab.discarded), extensionFrames: frames ?? null,
+          note: 'This tab is not attached to the debugger. Claim it again. Embedded frames owned by another extension block attach; extensionFrames lists them when Chrome exposes the frame tree.',
+        };
+      }
       const tab = await bounded(this.api.tabs.get(tabId), signal, 'tabs.get');
       let page = null;
       try {

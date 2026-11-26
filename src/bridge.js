@@ -20,6 +20,21 @@ const portValue = value => {
   return Number.isSafeInteger(port) && port >= 1024 && port <= 65535 ? String(port) : undefined;
 };
 
+// Chrome reasons are short codes. Explain what each one means for the tab, so a
+// later failure says whether to retry, re-claim, or give up on this tab.
+function describeDetach({ reason, tabExists, closeSource }) {
+  if (reason === 'released') return 'this chat released it';
+  if (reason === 'target_closed') {
+    if (tabExists === false) return `the tab was closed${closeSource ? ` by ${closeSource}` : ' outside this extension'}`;
+    if (tabExists === true) return 'Chrome dropped the debug target but the tab is still open (discarded or moved between windows); this chat still holds it, claim it again';
+    return 'Chrome closed the debug target';
+  }
+  if (reason === 'replaced_with_devtools') return 'DevTools opened on this tab and took the debugger session';
+  if (reason === 'replaced_with_devtools_extension') return 'another extension attached its debugger to this tab';
+  if (reason === 'canceled_by_user') return 'the user canceled the debugging prompt';
+  return reason ? `reason ${reason}` : 'the reason is unknown';
+}
+
 export class Bridge {
   constructor({ port = PORT, auto = false, portCandidates, baseStateDir, stateDir, name, probe = probePort, deadlineMs = DEADLINE_MS, claimWaitMs = CLAIM_WAIT_MS } = {}) {
     // Optional label the agent side shows in the popup so the user can tell
@@ -264,9 +279,14 @@ export class Bridge {
           return;
         }
         if (message.type === 'detached' && Number.isSafeInteger(message.tabId)) {
-          this.claims.delete(message.tabId);
+          // The extension keeps the lease when the tab still exists (Chrome
+          // dropped the target for a discard or a window move). Keep the claim
+          // too, so the same chat can inspect and re-claim the tab it still owns.
+          if (!(message.tabExists === true && message.reason !== 'released')) this.claims.delete(message.tabId);
           this.lastDetach.set(message.tabId, {
             reason: typeof message.reason === 'string' ? message.reason.slice(0, 40) : null,
+            ...(typeof message.tabExists === 'boolean' ? { tabExists: message.tabExists } : {}),
+            ...(typeof message.closeSource === 'string' ? { closeSource: message.closeSource.slice(0, 80) } : {}),
             at: Date.now(),
           });
           if (this.lastDetach.size > 200) this.lastDetach.delete(this.lastDetach.keys().next().value);
@@ -361,7 +381,7 @@ export class Bridge {
     const last = this.lastDetach.get(tabId);
     if (!last || Date.now() - last.at > 60000) return '';
     const age = Math.max(0, Math.round((Date.now() - last.at) / 1000));
-    return ` (Chrome detached this tab ${age}s ago${last.reason ? `: ${last.reason}` : ''})`;
+    return ` (Chrome detached this tab ${age}s ago: ${describeDetach(last)})`;
   }
 
   rejectWaiters(tabId, error) {
@@ -455,6 +475,12 @@ export class Bridge {
         acquired = true;
       }
       if (action === 'release') this.releaseClaim(args.tabId, owner);
+      // A doctor run right after a failure should explain why the tab detached,
+      // not just report that it is not attached.
+      if (action === 'doctor' && tabId !== undefined) {
+        const note = this.lastDetach.get(tabId);
+        if (note && Date.now() - note.at <= 60000) result.detach = { ...note };
+      }
       if (action === 'messages') {
         // Reading consumes the hint; the result already carries the text.
         const unread = Number.isSafeInteger(result?.unread) && result.unread > 0 ? result.unread : 0;

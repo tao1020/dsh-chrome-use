@@ -440,7 +440,31 @@ test('a Chrome detach explains a later claim requirement with its reason', async
   await until(() => bridge.claims.size === 0);
   await assert.rejects(
     bridge.call('snapshot', { tabId: 7 }, 'a'),
-    /TAB_NOT_OWNED: claim the tab first \(Chrome detached this tab \d+s ago: replaced_with_devtools\)/,
+    /TAB_NOT_OWNED: claim the tab first \(Chrome detached this tab \d+s ago: DevTools opened on this tab and took the debugger session\)/,
+  );
+});
+
+test('a detach of a still-open tab keeps ownership for the same chat', async t => {
+  const bridge = await fixture(t, { claimWaitMs: 30 });
+  const { ws } = await pair(bridge);
+  respond(ws);
+  await bridge.call('claim', { tabId: 7 }, 'a');
+  ws.send(JSON.stringify({ type: 'detached', tabId: 7, reason: 'target_closed', tabExists: true }));
+  await until(() => bridge.lastDetach.has(7));
+  assert.equal(bridge.claims.get(7), 'a');
+  await assert.rejects(bridge.call('claim', { tabId: 7 }, 'b'), /TAB_IN_USE/);
+});
+
+test('a closed tab reports who closed it', async t => {
+  const bridge = await fixture(t);
+  const { ws } = await pair(bridge);
+  respond(ws);
+  await bridge.call('claim', { tabId: 7 }, 'a');
+  ws.send(JSON.stringify({ type: 'detached', tabId: 7, reason: 'target_closed', tabExists: false, closeSource: 'idle' }));
+  await until(() => bridge.claims.size === 0);
+  await assert.rejects(
+    bridge.call('snapshot', { tabId: 7 }, 'a'),
+    /Chrome detached this tab \d+s ago: the tab was closed by idle/,
   );
 });
 

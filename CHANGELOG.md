@@ -1,5 +1,18 @@
 # 更新日志
 
+## [0.16.1] - 2026-11-26
+
+### 修复
+
+- `chrome_claim` 被另一个扩展的 `chrome-extension://` 内嵌 frame 拦住时，错误信息会列出这些 frame 的 URL、frameId、parentFrameId 和扩展 ID，并给出 `chrome://extensions/?id=...` 方便定位；读不到 frame 树时会说明原因。Chromium 只要页面里任意一个 frame 属于别的扩展就拒绝 DevTools attach，不需要整页被接管。
+- Chrome 主动 detach（例如 `target_closed`）不再立刻释放标签页租约：标签页还在、只是调试目标被丢弃或窗口被移动时，原会话保留 ownership，可重新 claim，其他会话仍然拿不到；标签页真的消失或主动 release 时才释放。
+- detach 提示会翻译原因（DevTools 打开了、别的扩展抢占了调试器、用户取消了调试提示、标签页被关闭），标签页由本扩展关闭时还带上关闭方：`idle`、`chat <port>`、`cleanup <port>`、`disconnect <port>`。
+- `chrome_doctor` 在标签页尚未 attach 时不再只报 `TAB_NOT_ATTACHED`：会返回标签页是否存在、是否已被 Chrome discard、能读到的其他扩展 frame 列表和下一步说明。
+
+### 文档
+
+- `docs/chrome-session-debugging.md` 补充 frame 诊断、租约保留和 detach 原因说明。
+
 ## [0.16.0] - 2026-11-24
 
 ### 新增
