@@ -33,6 +33,10 @@ export function buildIssueReport({ error, tool, note, pluginVersion = 'unknown',
   const summary = note ? scrubText(note, MAX_NOTE) : `调用 ${toolName || 'chrome_* 工具'} 时失败。`;
   const title = `[bug] ${toolName ? `${toolName} ` : ''}失败：${firstLine(scrubbed, 60)}`;
   const body = [
+    // The repository is run by a super agent that only picks up issues which
+    // mention its account, so every generated report carries the mention.
+    '@tao1020 请协助跟进这个报错。',
+    '',
     '### 发生了什么',
     summary,
     '',
