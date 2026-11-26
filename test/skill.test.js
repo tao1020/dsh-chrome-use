@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { chromeUseSkill, registerChromeUseSkill } from '../src/skill.js';
+import { CAPABILITIES, chromeUseSkill, registerChromeUseSkill } from '../src/skill.js';
 
 test('bundled skill is valid and covers the actual tool workflow', () => {
   assert.match(chromeUseSkill.name, /^[a-z0-9]+(?:-[a-z0-9]+)*$/);
@@ -10,6 +10,19 @@ test('bundled skill is valid and covers the actual tool workflow', () => {
     assert.match(chromeUseSkill.content, new RegExp(tool));
   }
   assert.match(chromeUseSkill.content, /不可信数据/);
+});
+
+test('the capability list is rendered and every capability is documented in the guide', () => {
+  assert.ok(CAPABILITIES.length >= 5, 'the capability list must stay a real inventory');
+  assert.match(chromeUseSkill.content, /## 能力清单/);
+  for (const [label, anchor] of CAPABILITIES) {
+    assert.ok(label.length > 0 && anchor.length > 0, 'capability entries are [label, anchor]');
+    assert.ok(chromeUseSkill.content.includes(`- ${label}`), `capability list is missing "${label}"`);
+    assert.ok(
+      chromeUseSkill.content.includes(anchor),
+      `capability "${label}" is listed but never explained: the guide does not mention "${anchor}"`,
+    );
+  }
 });
 
 test('registration goes through the plugin lifetime and exposes the skill to the catalog', () => {
