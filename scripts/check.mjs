@@ -1,6 +1,11 @@
 import { readdir, readFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import assert from 'node:assert/strict';
+import { describeConflict, findRepositoryConflictMarkers } from './conflict-markers.mjs';
+
+const conflicts = await findRepositoryConflictMarkers();
+for (const conflict of conflicts) console.error(describeConflict(conflict));
+assert.equal(conflicts.length, 0, `发现 ${conflicts.length} 处合并冲突标记`);
 for (const directory of ['src', 'extension', 'scripts', 'test']) {
   for (const file of await readdir(directory)) {
     if (!/\.m?js$/.test(file)) continue;
@@ -19,4 +24,4 @@ assert.equal(manifest.host_permissions, undefined);
 assert.equal(manifest.content_scripts, undefined);
 assert.equal(manifest.content_security_policy.extension_pages, "script-src 'self'; object-src 'none'; connect-src ws://127.0.0.1:*");
 assert.ok(pkg.dsh.bundle.patch);
-console.log('JavaScript syntax, generated client, package and extension manifest checks passed.');
+console.log('Conflict markers, JavaScript syntax, generated client, package and extension manifest checks passed.');
