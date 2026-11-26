@@ -1,5 +1,17 @@
 # 更新日志
 
+## [0.17.0] - 2026-11-26
+
+### 新增
+
+- Chrome 标签页右键菜单新增「复制 DSH Chrome Use 引用」：点一下就把该标签页的引用写进系统剪贴板，粘到 DSH 输入框里即可引用这个 tab，模型收到的内容和用 `@` 选标签页相同。引用同样是一行 `[Chrome 标签页 #123] 《标题》 网址` 加一条 `---` 分隔线；复制本身不需要先配对，也不占用标签页。
+- 扩展新增 `contextMenus`、`offscreen` 和 `clipboardWrite` 权限：`contextMenus` 只注册这一项菜单；`offscreen` 和 `clipboardWrite` 只在点击复制时把这一条引用写进剪贴板。扩展没有申请 `clipboardRead`，不能读取剪贴板内容。
+
+### 文档
+
+- README（中/英）增加右键复制引用的说明。
+- `PRIVACY.md` 和 `CHROMEWEBSTORE.md` 同步新增权限和剪贴板数据说明。
+
 ## [0.16.2] - 2026-11-26
 
 ### 变更

@@ -81,6 +81,9 @@ https://chromewebstore.google.com/detail/anobmlnjdeahldefeikjdmmnckphpdhc
 | `alarms` | permissions | 在 Harness 重启或连接中断后按固定间隔尝试重连；不用于采集数据。 |
 | `downloads` | permissions | 按用户要求列出下载记录，确认文件是否保存成功；不修改下载内容，也不上传文件。 |
 | `webNavigation` | permissions | 仅当调试器附加失败、且 Chrome 明确提示页面里存在其他扩展的页面（`chrome-extension://`）时，读取**当前这个标签页**的 frame 列表（URL、frameId、parentFrameId），用于告诉用户是哪个扩展、哪个 frame 拦截了调试。不在其他时机读取，不记录浏览历史。 |
+| `contextMenus` | permissions | 只在标签页右键菜单里增加「复制 DSH Chrome Use 引用」一项，方便用户把一个标签页的引用粘到 Harness 对话里。不修改其他菜单，也不读取菜单之外的操作。 |
+| `offscreen` | permissions | 仅在你点击「复制 DSH Chrome Use 引用」时创建一个不显示界面的扩展页面，用来调用系统剪贴板；它不读取页面内容，也不会在后台自动创建。 |
+| `clipboardWrite` | permissions | 只把你在菜单里主动复制的那一条标签页引用写入系统剪贴板。扩展不申请 `clipboardRead`，因此无法读取剪贴板内容。 |
 
 ## Privacy & Data Use
 
@@ -101,6 +104,7 @@ https://chromewebstore.google.com/detail/anobmlnjdeahldefeikjdmmnckphpdhc
 | Web history | No（只按请求读取当前标签页标题/URL） | No | 选择操作对象 | No |
 | User activity | No（点击/输入只作用于用户指定的页面） | No | 执行用户要求的操作 | No |
 | Website content | No（仅本机处理） | No | 读取页面结构、截图、控制台/网络日志 | No |
+| Clipboard | No（只写不读） | No | 用户点击菜单时写入一条标签页引用 | No |
 
 ### Data Use Certification
 
@@ -133,6 +137,7 @@ https://chromewebstore.google.com/detail/anobmlnjdeahldefeikjdmmnckphpdhc
 
 | Version | Date | Changes | Status |
 |---------|------|---------|--------|
+| 0.17.0 | 2026-11-26 | 标签页右键菜单复制 DSH Chrome Use 引用；新增 `contextMenus`、`offscreen`、`clipboardWrite` 权限，只写剪贴板不读取。 | Draft（待上传商店） |
 | 0.16.1 | 2026-11-26 | 调试器被其他扩展的 `chrome-extension://` frame 拦截时列出 frame 与扩展 ID，并给 `chrome://extensions/?id=` 定位；Chrome 主动 detach 但标签页还在时保留占用；detach 原因和关闭方（idle / chat / cleanup / disconnect）写进提示；`chrome_doctor` 在未附加时返回标签页状态和 frame 列表。新增 `webNavigation` 权限。 | Draft（待上传商店） |
 | 0.16.0 | 2026-11-24 | 输入框 `@` 选择标签页；商店安装与自动重连保持稳定。 | Published |
 | 0.15.1 | 2026-11-23 | 修复运行期 skill 加载；补构建产物校验。 | Published |
@@ -147,6 +152,7 @@ https://chromewebstore.google.com/detail/anobmlnjdeahldefeikjdmmnckphpdhc
 - 调试器附加会被页面中属于其他扩展的 `chrome-extension://` frame 阻止（Chromium 行为）。0.16.1 起会列出是哪个扩展、哪个 frame，并提示到 `chrome://extensions/?id=<id>` 禁用；这不是本扩展能绕过的限制。
 - 多个 Harness 同时连接时，标签页占用由扩展统一协调；扩展重载或浏览器重启会清空占用，需要重新 claim。
 - `webNavigation` 只在附加失败时按标签页读取 frame 列表，用于诊断，不用于追踪浏览历史。
+- 0.17.0 新增 `clipboardWrite`：只写不读，且只在用户点击标签页右键菜单时写入一条引用；不采集剪贴板内容。
 
 ### Rejection History
 
