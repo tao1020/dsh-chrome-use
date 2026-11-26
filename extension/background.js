@@ -4,6 +4,7 @@ import { TabLeases } from './leases.js';
 import { PORT, MAX_MESSAGE, PARALLEL_TABS, MESSAGE_UNREAD_MAX, validateArgs } from './protocol.js';
 import { classifyPairingCode } from './pairing-code.js';
 import { classifyFailure } from './failures.js';
+import { TAB_REFERENCE_MENU_ID, copyTabReference, createTabReferenceMenu } from './tab-reference.js';
 
 // One Chrome extension can drive several harnesses at once. Each connection
 // keeps its own socket, pairing token, command map and cleanup generation. The
@@ -1073,6 +1074,17 @@ chrome.alarms.onAlarm.addListener(alarm => {
 chrome.runtime.onStartup.addListener(() => {
   restoreConnections().catch(error => { lastError = error.message; });
   syncIdleAlarm().catch(error => { lastError = error.message; });
+});
+// Menus survive worker restarts, so creating the item again is expected; the
+// helper swallows the duplicate-id error.
+chrome.runtime.onInstalled.addListener(createTabReferenceMenu);
+createTabReferenceMenu();
+chrome.contextMenus.onClicked.addListener((info, tab) => {
+  if (info.menuItemId !== TAB_REFERENCE_MENU_ID) return;
+  copyTabReference(tab).catch(error => {
+    lastError = `COPY_REFERENCE_FAILED: ${error.message}`;
+    console.warn('dsh-chrome-use: could not copy the tab reference', error);
+  });
 });
 restoreConnections().catch(error => { lastError = error.message; });
 syncIdleAlarm().catch(error => { lastError = error.message; });

@@ -2,9 +2,11 @@
 
 ## 访问范围
 
-dsh-chrome-use 用于让你配置的 DeepSeek Harness 操作本机 Chrome。扩展需要 `debugger`、`tabs`、`tabGroups`、`storage`、`alarms`、`downloads` 和 `webNavigation` 权限，分别用于调试网页、选择标签页、把新页面放进同名标签页组、保存配对状态、恢复连接、读取下载记录，以及诊断调试器附加失败。
+dsh-chrome-use 用于让你配置的 DeepSeek Harness 操作本机 Chrome。扩展需要 `debugger`、`tabs`、`tabGroups`、`storage`、`alarms`、`downloads`、`webNavigation`、`contextMenus`、`offscreen` 和 `clipboardWrite` 权限，分别用于调试网页、选择标签页、把新页面放进同名标签页组、保存配对状态、恢复连接、读取下载记录、诊断调试器附加失败，以及提供标签页右键菜单里的「复制 DSH Chrome Use 引用」。
 
 `webNavigation` 只在调试器附加失败、且 Chrome 提示页面中存在其他扩展的页面时使用：读取当前标签页的 frame 列表（URL、frameId、parentFrameId），用于告诉你哪个扩展的哪个 frame 拦截了调试。其他时候不读取，也不记录浏览历史。
+
+`contextMenus` 只用于在标签页右键菜单里加这一项；`offscreen` 和 `clipboardWrite` 只在你在菜单里点击复制时，把这一条引用文本写进系统剪贴板。扩展不会读取剪贴板，也不会在后台自动复制任何内容。
 
 连接后，Harness 可以读取和操作所有普通 HTTP(S) 标签页，包括已登录的网站。只有 AI 接管的页面才会开启调试和日志采集。Chrome 调试提示条会显示当前调试状态；你可以在扩展弹窗点击“断开全部连接”。
 

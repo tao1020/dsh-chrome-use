@@ -56,6 +56,8 @@ dsh plugin --profile desktop add dsh-chrome-use
 
 选中的标签页仍然要先 `chrome_claim` 才能操作，因为一个标签页同时只归一个会话。「先 claim、再 snapshot」这些说明写在运行期 skill 和工具描述里，不再塞进你的消息。扩展没连接时这一组只显示一行提示，不影响其他 `@` 候选。
 
+不想打开 `@` 菜单时，也可以直接在标签页上点右键，选「复制 DSH Chrome Use 引用」。扩展会把同一种引用（`[Chrome 标签页 #123] 《标题》 网址` 加一条分隔线）写进系统剪贴板；粘贴到 DSH 输入框里，模型收到的内容和用 `@` 选中这一页相同。复制本身不需要先配对，也不占用标签页；但 Harness 要操作这一页，仍然需要扩展已连接，并先 `chrome_claim`。
+
 ### 5. 多个 Harness 同时连接（可选）
 
 不设置 `DSH_CHROME_USE_PORT` 时，插件自动选择端口：先试上次成功的端口（`~/.dsh/dsh-chrome-use/port.json`），再试 18791、18793..18801，跳过 18792。第一个可用端口生效，端口被占用不会让启动直接失败。设置页会显示实际端口。
@@ -147,6 +149,8 @@ After a successful pairing, restarting the Harness, restarting Chrome, or an ext
 Type `@` in the composer and a "Chrome 标签页" group lists every http/https page open in Chrome, with its title and URL. Picking one inserts a tab reference, so the message carries that page's tabId, title and URL instead of making the model guess between dozens of tabs. The reference sits on its own line, separated from your own words by a `---` rule, so the transcript stays short: one `[Chrome 标签页 #123] 《title》 url` line and a divider, not a paragraph of instructions.
 
 The picked tab still needs `chrome_claim` before any operation, because a tab belongs to one chat at a time. That rule, and what to do on TAB_NOT_OWNED, lives in the runtime skill and the tool descriptions instead of your message. When the extension is not connected the group shows a single hint row and leaves the other `@` candidates alone.
+
+You can also right-click a tab and choose "复制 DSH Chrome Use 引用" instead of opening the `@` menu. The extension writes the same reference (`[Chrome 标签页 #123] 《title》 url` plus a divider) to the system clipboard; what the model receives after pasting is the same as picking that tab with `@`. Copying does not require pairing and does not claim the tab, but the Harness still needs a connected extension and must `chrome_claim` before operating on the page.
 
 ### 5. Several harnesses at once (optional)
 

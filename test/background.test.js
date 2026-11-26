@@ -35,15 +35,52 @@ async function fixture(t, initial = {}) {
   });
   const originalChrome = globalThis.chrome;
   const originalSocket = globalThis.WebSocket;
+  const contextMenus = new Map();
+  const offscreenDocs = [];
+  const runtimeMessages = [];
+  let sendMessageResult = { ok: true };
+  let sendMessageFailures = 0;
   const runtime = {
     id: 'test-extension',
     getURL: file => `chrome-extension://test-extension/${file}`,
     getManifest: () => ({ version: '0.1.1' }),
     onMessage: event('message'),
     onStartup: event('startup'),
+    onInstalled: event('installed'),
+    lastError: undefined,
+    getContexts: async ({ contextTypes, documentUrls } = {}) => {
+      if (!contextTypes?.includes('OFFSCREEN_DOCUMENT')) return [];
+      const docs = offscreenDocs.map(doc => ({ contextType: 'OFFSCREEN_DOCUMENT', documentUrl: runtime.getURL(doc.url) }));
+      return documentUrls ? docs.filter(doc => documentUrls.includes(doc.documentUrl)) : docs;
+    },
+    sendMessage: async message => {
+      if (sendMessageFailures > 0) {
+        sendMessageFailures--;
+        throw new Error('Could not establish connection. Receiving end does not exist.');
+      }
+      runtimeMessages.push(message);
+      return sendMessageResult;
+    },
   };
   const api = {
     runtime,
+    contextMenus: {
+      onClicked: event('contextMenuClicked'),
+      create(options, callback) {
+        queueMicrotask(() => {
+          if (contextMenus.has(options.id)) runtime.lastError = { message: 'Cannot create item with duplicate id' };
+          else {
+            contextMenus.set(options.id, options);
+            runtime.lastError = undefined;
+          }
+          callback?.();
+        });
+      },
+    },
+    offscreen: {
+      createDocument: async options => { offscreenDocs.push(options); },
+      closeDocument: async () => {},
+    },
     storage: {
       local: {
         get: async () => ({ ...stored }),
@@ -146,6 +183,9 @@ async function fixture(t, initial = {}) {
     releaseReady,
     setNextTabId: id => { nextTabId = id; },
     setAutoReady: value => { autoReady = value; },
+    setSendMessageResult: value => { sendMessageResult = value; },
+    setSendMessageFailures: value => { sendMessageFailures = value; },
+    contextMenus, offscreenDocs, runtimeMessages,
     tabUrls,
   };
 }
@@ -1338,4 +1378,61 @@ test('idle closing fails closed when Chrome cannot report debugger targets', asy
   listeners.alarm({ name: 'idle-tabs' });
   await new Promise(resolve => setImmediate(resolve));
   assert.ok(tabUrls.has(9), 'must not close when attachment state cannot be verified');
+});
+
+test('the tab context menu copies the same reference the @ source sends', async t => {
+  const { listeners, contextMenus, offscreenDocs, runtimeMessages } = await fixture(t, {});
+  const menu = [...contextMenus.values()][0];
+  assert.equal(menu.title, '复制 DSH Chrome Use 引用');
+  assert.deepEqual(menu.contexts, ['tab']);
+
+  listeners.contextMenuClicked({ menuItemId: menu.id }, { id: 7, title: '订单列表', url: 'https://shop.test/orders' });
+  await until(() => runtimeMessages.length === 1);
+  assert.equal(offscreenDocs.length, 1);
+  assert.deepEqual(offscreenDocs[0].reasons, ['CLIPBOARD']);
+  assert.equal(runtimeMessages[0].type, 'dsh-chrome-use:clipboard-write');
+  assert.equal(runtimeMessages[0].text, '[Chrome 标签页 #7] 《订单列表》 https://shop.test/orders\n\n---\n\n');
+
+  // The offscreen document is reused for the next copy.
+  listeners.contextMenuClicked({ menuItemId: menu.id }, { id: 8, title: 'Inbox', url: 'https://mail.test/inbox' });
+  await until(() => runtimeMessages.length === 2);
+  assert.equal(offscreenDocs.length, 1);
+  assert.match(runtimeMessages[1].text, /Chrome 标签页 #8/);
+});
+
+test('unrelated menu clicks are ignored and clipboard failures are reported', async t => {
+  const { listeners, contextMenus, runtimeMessages, setSendMessageResult, message } = await fixture(t, {});
+  const menu = [...contextMenus.values()][0];
+  listeners.contextMenuClicked({ menuItemId: 'another-item' }, { id: 7, title: 'A', url: 'https://a.test/' });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(runtimeMessages.length, 0);
+
+  setSendMessageResult({ ok: false, error: 'CLIPBOARD_WRITE_FAILED: denied' });
+  listeners.contextMenuClicked({ menuItemId: menu.id }, { id: 7, title: 'A', url: 'https://a.test/' });
+  await until(() => runtimeMessages.length === 1);
+  await new Promise(resolve => setImmediate(resolve));
+  const status = await message('status');
+  assert.match(status.error, /COPY_REFERENCE_FAILED: CLIPBOARD_WRITE_FAILED: denied/);
+});
+
+
+test('the copy retries while the offscreen page is still registering its listener', async t => {
+  const { listeners, contextMenus, runtimeMessages, setSendMessageFailures } = await fixture(t, {});
+  setSendMessageFailures(2);
+  const menu = [...contextMenus.values()][0];
+  listeners.contextMenuClicked({ menuItemId: menu.id }, { id: 7, title: '订单列表', url: 'https://shop.test/orders' });
+  await until(() => runtimeMessages.length === 1);
+  assert.match(runtimeMessages[0].text, /Chrome 标签页 #7/);
+});
+
+test('re-creating the menu and firing install keeps exactly one item', async t => {
+  const { api, listeners, contextMenus } = await fixture(t, {});
+  assert.equal(contextMenus.size, 1);
+  listeners.installed();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(contextMenus.size, 1);
+  api.contextMenus.create({ id: 'dsh-chrome-use-copy-reference', title: 'duplicate', contexts: ['tab'] }, () => {});
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(contextMenus.size, 1);
+  assert.equal(contextMenus.get('dsh-chrome-use-copy-reference').title, '复制 DSH Chrome Use 引用');
 });
