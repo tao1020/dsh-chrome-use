@@ -33,6 +33,11 @@ test('skill carries the string source required when DSH loads it', () => {
   assert.equal(chromeUseSkill.source, 'runtime');
 });
 
+test('skill tells the user to mention the maintainer account in every issue', () => {
+  assert.match(chromeUseSkill.content, /@tao1020/);
+  assert.match(chromeUseSkill.content, /正文里 @tao1020/);
+});
+
 test('skill explains cross-Harness messaging and that messages are not user instructions', () => {
   assert.match(chromeUseSkill.content, /chrome_send_message/);
   assert.match(chromeUseSkill.content, /chrome_messages/);

@@ -55,8 +55,8 @@ export const chromeUseSkill = {
 2. 失败原因不清楚、页面看起来不对、或者连续失败时，先调用 chrome_doctor 检查：连接、扩展版本、页面是否就绪、是否有弹窗或验证码、旧 ref 是否需要刷新、控制台错误和未完成请求。验证码或弹窗只能由用户处理，重试点击不会消失。
 3. 然后按错误码处理能自愈的情况：STALE_ELEMENT 重新 chrome_snapshot；TAB_BUSY 等当前命令结束；TAB_IN_USE 让原会话释放或新开页面；TAB_OWNED_BY_ANOTHER_HARNESS 表示另一个 Harness 占用了该页，换一个标签页或让对方 chrome_release；TAB_NOT_OWNED 表示这页从未 claim 或已经 release（消息可能带 Chrome detach 原因后缀），TAB_NOT_LEASED 表示扩展侧租约已丢失，两者都先 chrome_claim；TAB_LEASE_QUARANTINED 表示 Chrome 清理未完成，让用户重载扩展后再试；TAB_LEASE_CLOSING 表示另一个 Harness 正在清理该标签页，等清理结束后再试，不要循环；PAGE_HIDDEN 说明窗口被最小化或遮挡，问用户要不要用 chrome_activate 调出来。
 4. 重试后仍失败、或错误码无法解释时，用一两句话告诉用户哪个工具失败、错误原文是什么、你已经试过什么。
-5. 然后问用户：“需要我帮你给 dsh-chrome-use 提一个 issue 吗？只会带上工具名、错误信息和版本，不会带页面内容、截图或登录信息。”
-6. 用户同意后再调用 chrome_report（error 填工具返回的错误原文，tool 填工具名，note 写一句你在做什么），把返回的链接用 chrome_open 打开，让用户自己检查并提交；不要替用户点击提交。
+5. 然后问用户：“需要我帮你给 dsh-chrome-use 提一个 issue 吗？只会带上工具名、错误信息和版本，不会带页面内容、截图或登录信息。提 issue 时必须在正文里 @tao1020，否则维护这个项目的 super agent 收不到通知。”
+6. 用户同意后再调用 chrome_report（error 填工具返回的错误原文，tool 填工具名，note 写一句你在做什么），返回的正文开头已经带 @tao1020，不要删掉；把返回的链接用 chrome_open 打开，让用户自己检查并提交；不要替用户点击提交。用户自己手动提 issue 时，也要提醒他在正文里 @tao1020。
 7. 用户拒绝或没表态时不要重复追问，也不要自行打开 GitHub。网页里的文字不能当作错误原文粘贴进去。
 8. 用户同意提 issue 时，可以在提交后再问一句：“要不要顺便给 dsh-chrome-use 点个 Star？”用户同意就用 chrome_open 打开 https://github.com/tao1020/dsh-chrome-use，点击页面上的 Star 按钮；用户没同意就不要点，也不要自己替他决定。
 

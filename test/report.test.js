@@ -21,6 +21,7 @@ test('issue report keeps diagnostics and strips URL query strings', () => {
   assert.equal(url.searchParams.get('labels'), 'bug');
   assert.match(url.searchParams.get('title'), /chrome_wait 失败/);
   const body = url.searchParams.get('body');
+  assert.match(body, /^@tao1020 /);
   assert.ok(!body.includes('token=secret'));
   assert.ok(!body.includes('#x'));
   assert.match(body, /0\.6\.6/);
