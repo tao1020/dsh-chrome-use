@@ -2,16 +2,27 @@
 // session the usage guide; no separate skill file is installed or maintained.
 
 // Agent-visible capability list. Every entry is rendered into the guide, and the
-// second element must also appear somewhere in the guide body, so a feature that
+// anchor must also appear in the guide body *after* the list, so a feature that
 // only lands in the extension or in CHANGELOG.md fails `npm test` until an agent
-// can actually discover it in the skill.
+// can actually discover it in the skill. Anchors must not be substrings of their
+// own label, otherwise the rendered line would satisfy its own check.
 export const CAPABILITIES = [
-  ['标签页读取与操作', 'chrome_snapshot'],
-  ['@ 选中的标签页引用', 'Chrome 标签页 #'],
+  ['配对与连接检查', 'chrome_pair'],
+  ['标签页读取与操作', '先 chrome_snapshot 获取元素 ref'],
+  ['@ 选中的标签页引用', '在输入框 @ 选中的标签页'],
   ['右键复制标签页引用', '复制 DSH Chrome Use 引用'],
-  ['多 Harness 留言', 'chrome_send_message'],
-  ['空闲标签页自动关闭', '空闲标签页'],
-  ['失败后的结构化自愈指引', 'Failure:'],
+  ['正文与结构化抽取', 'chrome_scrape'],
+  ['表单填写与文件上传', 'chrome_upload'],
+  ['等待、断言与网络响应', 'chrome_wait_response'],
+  ['响应式、深色模式与弱网', 'chrome_emulate'],
+  ['截图与 PDF 导出', 'chrome_pdf'],
+  ['下载确认', 'chrome_downloads'],
+  ['控制台与网络调试', 'chrome_doctor'],
+  ['标签页清理与关闭', 'chrome_cleanup'],
+  ['空闲标签页自动关闭', '超过设置的空闲时间'],
+  ['多 Harness 留言', 'chrome_send_message 发送'],
+  ['保持 Mac 唤醒', 'chrome_keep_awake'],
+  ['失败后的结构化自愈指引', 'Failure: {...}'],
 ];
 
 export const chromeUseSkill = {
@@ -27,7 +38,7 @@ export const chromeUseSkill = {
 
 ## 能力清单
 
-这张表是本插件对 agent 承诺的全部能力，每项在正文里都有细节；新增或改动能力时，必须同时更新这张表和正文。
+这张表是能力总览，每项在正文里都有细节；新增或改动能力时，同时更新这张表和正文。
 
 ${CAPABILITIES.map(([label]) => `- ${label}`).join('\n')}
 
