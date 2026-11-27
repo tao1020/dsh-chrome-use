@@ -13,14 +13,23 @@ test('bundled skill is valid and covers the actual tool workflow', () => {
 });
 
 test('the capability list is rendered and every capability is documented in the guide', () => {
-  assert.ok(CAPABILITIES.length >= 5, 'the capability list must stay a real inventory');
+  assert.ok(CAPABILITIES.length >= 10, 'the capability list must stay a real inventory');
   assert.match(chromeUseSkill.content, /## 能力清单/);
+  // Only the guide body counts: searching the whole content would let a rendered
+  // label satisfy its own anchor and hide a deleted explanation.
+  const bodyStart = chromeUseSkill.content.indexOf('## 何时使用');
+  assert.ok(bodyStart > 0, 'the guide body must follow the capability list');
+  const body = chromeUseSkill.content.slice(bodyStart);
+  const labels = new Set();
   for (const [label, anchor] of CAPABILITIES) {
     assert.ok(label.length > 0 && anchor.length > 0, 'capability entries are [label, anchor]');
+    assert.ok(!labels.has(label), `duplicate capability "${label}"`);
+    labels.add(label);
+    assert.ok(!label.includes(anchor), `capability "${label}" anchor "${anchor}" matches its own label`);
     assert.ok(chromeUseSkill.content.includes(`- ${label}`), `capability list is missing "${label}"`);
     assert.ok(
-      chromeUseSkill.content.includes(anchor),
-      `capability "${label}" is listed but never explained: the guide does not mention "${anchor}"`,
+      body.includes(anchor),
+      `capability "${label}" is listed but never explained: the guide body does not mention "${anchor}"`,
     );
   }
 });
