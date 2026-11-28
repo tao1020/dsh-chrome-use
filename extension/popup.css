@@ -52,3 +52,9 @@ footer { padding: 12px 22px 18px; color: #657083; font-size: 11px; }
 footer p { margin: 0; }
 a { color: #185adb; }
 [hidden] { display: none !important; }
+
+/* Advanced server address stays collapsed so the default path looks unchanged. */
+.advanced { margin: 10px 0 2px; }
+.advanced summary { cursor: pointer; font-size: 13px; color: #33507a; }
+.advanced > * + * { margin-top: 6px; }
+.advanced input { letter-spacing: 0; }

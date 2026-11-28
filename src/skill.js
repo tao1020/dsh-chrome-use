@@ -23,6 +23,7 @@ export const CAPABILITIES = [
   ['多 Harness 留言', 'chrome_send_message 发送'],
   ['保持 Mac 唤醒', 'chrome_keep_awake'],
   ['失败后的结构化自愈指引', 'Failure: {...}'],
+  ['进阶：跨机器连接（仅内网地址）', 'DSH_CHROME_USE_BIND_HOST'],
 ];
 
 export const chromeUseSkill = {
@@ -53,6 +54,7 @@ ${CAPABILITIES.map(([label]) => `- ${label}`).join('\n')}
 1. 先调用 chrome_status 检查连接。
 2. 未连接时调用 chrome_pair 生成 8 位配对码（10 分钟内有效）。返回里有 pairingCode 时优先把 pairingCode 给用户；它已经包含端口，新扩展会自动识别，不要要求用户再填端口。没有 pairingCode 时使用纯数字 code（旧桥/旧扩展，只在 18791 可用）。让用户在 Chrome 工具栏打开 dsh-chrome-use 扩展，粘贴配对码并点击“连接”。扩展还没安装时，让用户到 Harness 设置 → dsh-chrome-use 点商店链接安装。不要要求用户重装或手动加载文件夹。
 3. 配对成功后，重启 Harness、Chrome 或扩展自动更新都会自动重连。用户主动断开后，留空配对码点“连接”即可。
+4. 默认只连本机 127.0.0.1。Chrome 和 Harness 不在同一台机器上时，Harness 侧要同时设置 DSH_CHROME_USE_PORT 和 DSH_CHROME_USE_BIND_HOST=<内网 IP>，用户在扩展弹窗的「进阶：服务器地址」填同一个 IP 再连接；只接受环回和内网地址，公网服务器让用户用 SSH 隧道把远端端口映射到本机，不要建议直接暴露端口。
 
 ## 与其他 Harness 留言
 

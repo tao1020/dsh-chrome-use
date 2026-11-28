@@ -190,6 +190,39 @@ async function fixture(t, initial = {}) {
   };
 }
 
+test('a stored host that no longer validates is dropped instead of dialled on loopback', async t => {
+  const { sockets, message } = await fixture(t, {
+    connections: [{ port: 18791, token: 'a'.repeat(64), host: 'example.com' }],
+    enabled: true,
+  });
+  assert.equal(sockets.length, 0, 'an untrusted address must not be replaced with loopback');
+  const status = await message('status');
+  assert.equal(status.connections.length, 0);
+  assert.equal(status.paired, false);
+});
+
+test('a saved token is never sent to a different machine', async t => {
+  const saved = [{ port: 18791, token: 'a'.repeat(64), host: '127.0.0.1' }];
+  const { sockets, stored, message } = await fixture(t, { connections: saved, enabled: true });
+  const before = sockets.length;
+  const result = await message('connect', { host: '192.168.1.20' });
+  assert.match(result.error, /PAIRING_REQUIRED/);
+  assert.equal(sockets.length, before, 'no socket may be opened to the other machine');
+  assert.deepEqual(stored.connections, saved);
+  assert.equal(stored.serverHost, undefined, 'a failed attempt must not replace the saved address');
+});
+
+test('a reconnect dials the address the token was paired with, not the global one', async t => {
+  const { sockets } = await fixture(t, {
+    connections: [{ port: 18791, token: 'a'.repeat(64), host: '127.0.0.1' }],
+    serverHost: '192.168.1.20',
+    enabled: true,
+  });
+  assert.equal(sockets.length, 1);
+  assert.equal(sockets[0].url, 'ws://127.0.0.1:18791/bridge');
+  assert.equal(sockets[0].sent[0].type, 'auth');
+});
+
 test('worker startup migrates the legacy token to port 18791 and disconnect keeps it but disables reconnect', async t => {
   const { sockets, alarms, stored, message, listeners, settled } = await fixture(t, { token: 'a'.repeat(64), enabled: true, foregroundMode: false });
   assert.equal(sockets.length, 1);
@@ -197,7 +230,7 @@ test('worker startup migrates the legacy token to port 18791 and disconnect keep
   assert.equal(sockets[0].sent[0].type, 'auth');
   assert.equal(sockets[0].sent[0].code, undefined);
   assert.deepEqual(sockets[0].sent[0].features, [PARALLEL_TABS]);
-  assert.deepEqual(stored.connections, [{ port: 18791, token: 'a'.repeat(64) }]);
+  assert.deepEqual(stored.connections, [{ port: 18791, token: 'a'.repeat(64), host: '127.0.0.1' }]);
   assert.equal(stored.token, undefined);
   const status = await message('status');
   assert.equal(status.connected, true);
@@ -206,7 +239,7 @@ test('worker startup migrates the legacy token to port 18791 and disconnect keep
   assert.equal(alarms.has('reconnect'), true);
   await message('disconnect');
   assert.equal(stored.enabled, false);
-  assert.deepEqual(stored.connections, [{ port: 18791, token: 'a'.repeat(64) }]);
+  assert.deepEqual(stored.connections, [{ port: 18791, token: 'a'.repeat(64), host: '127.0.0.1' }]);
   listeners.alarm({ name: 'reconnect' });
   await settled();
   assert.equal(sockets.length, 1);
@@ -240,7 +273,7 @@ test('a bridge name is saved and shown in status, and survives a reconnect witho
   setReadyName(18791, 'Codex');
   await message('connect', { port: 18791 });
   await settled();
-  assert.deepEqual(stored.connections, [{ port: 18791, token: 'a'.repeat(64), name: 'Codex' }]);
+  assert.deepEqual(stored.connections, [{ port: 18791, token: 'a'.repeat(64), host: '127.0.0.1', name: 'Codex' }]);
   let status = await message('status');
   assert.equal(status.connections[0].name, 'Codex');
   socketFor(18791).close();
@@ -582,7 +615,7 @@ test('a late ready after disconnect does not persist a new connection', async t 
   const result = await connecting;
   assert.equal(result.ok, false);
   assert.equal(stored.enabled, false);
-  assert.deepEqual(stored.connections, [{ port: 18791, token: 'a'.repeat(64) }]);
+  assert.deepEqual(stored.connections, [{ port: 18791, token: 'a'.repeat(64), host: '127.0.0.1' }]);
 });
 
 test('the eleventh pairing is rejected before creating a socket', async t => {

@@ -90,6 +90,30 @@ DSH_CHROME_USE_PORT=18793 DSH_CHROME_USE_NAME=Codex dsh
 
 不过扩展本身不挑 Harness：任何能连上 bridge 的客户端，都能操作同一个 Chrome。Codex、OpenCode、Workbody 这类 Harness 用独立 JSON 运行器启动同一个 bridge 即可，配对、端口、标签页租约和留言规则都和 DeepSeek Harness 一样，多个 Harness 还能同时连。具体步骤见 [独立 JSON 运行器](docs/standalone-runner.md)。
 
+### 7. 跨机器连接（进阶可选项，只允许内网）
+
+默认行为不变：扩展只连本机的 `127.0.0.1`。只有 Chrome 和 Harness 不在同一台机器上时（例如 Chrome 跑在局域网里另一台机器的远程桌面或容器里），才需要这一节。
+
+Harness 侧要同时给端口和绑定地址，因为自动选端口只在 `127.0.0.1` 上探测：
+
+```bash
+DSH_CHROME_USE_PORT=18791 DSH_CHROME_USE_BIND_HOST=192.168.1.20 dsh web
+```
+
+扩展侧：打开扩展弹窗 → 「进阶：服务器地址」→ 填同一个内网 IP → 重新粘贴配对码连接。地址留空就是默认的 `127.0.0.1`。
+
+限制：
+
+- 只接受环回和内网地址：`127.0.0.0/8`、`10.0.0.0/8`、`172.16.0.0/12`、`192.168.0.0/16`、`169.254.0.0/16`、`::1`、`fc00::/7`、`fe80::/10`。域名和公网 IP 会被拒绝，因为域名可以解析到任何地方，而这个设置决定页面内容发往哪里。
+- 连接是明文 WebSocket：页面正文、截图和调试信息都会发到那台机器。只在信任的内网里用，不要把端口暴露到公网。
+- 一个 Chrome 配置同时只填一个服务器地址；要连两台机器，用两个 Chrome 配置，或让其中一台走 SSH 隧道。
+
+公网服务器更安全的做法是用 SSH 隧道，把远端的桥映射到本机回环，扩展地址保持 `127.0.0.1` 不变：
+
+```bash
+ssh -L 18791:127.0.0.1:18791 user@server
+```
+
 ---
 
 # dsh-chrome-use
@@ -183,3 +207,27 @@ Harnesses can also leave each other messages in the background: `chrome_send_mes
 This package is a DSH/Cordis plugin. `package.json` has no MCP entry point and no command-line entry point; dropping the npm package into Codex or OpenCode will not make `chrome_*` tools appear.
 
 The extension itself does not care which harness is on the other end: any client that can reach the bridge can drive the same Chrome. Harnesses such as Codex, OpenCode and Workbody start the same bridge with the standalone JSON runner, and get the same pairing, ports, tab leases and messaging rules as DeepSeek Harness; several harnesses can stay connected at once. See [Standalone JSON runner](docs/standalone-runner.md).
+
+### 7. Connecting across machines (optional, private networks only)
+
+The default does not change: the extension dials `127.0.0.1`. This section is only for the case where Chrome and the Harness run on different machines, for example Chrome inside a remote desktop or container on the LAN.
+
+The Harness side needs an explicit port as well as the bind address, because automatic port selection only probes `127.0.0.1`:
+
+```bash
+DSH_CHROME_USE_PORT=18791 DSH_CHROME_USE_BIND_HOST=192.168.1.20 dsh web
+```
+
+In the extension: open the popup, expand "进阶：服务器地址" (advanced: server address), fill in the same private IP, paste the pairing code again and connect. Leave it empty for the `127.0.0.1` default.
+
+Limits:
+
+- Only loopback and private addresses are accepted: `127.0.0.0/8`, `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `169.254.0.0/16`, `::1`, `fc00::/7`, `fe80::/10`. Hostnames and public IPs are refused, because a hostname can resolve anywhere and this setting decides where page content travels.
+- The connection is plain WebSocket, so page text, screenshots and debug information go to that machine in clear text. Use it only on a network you trust, and never expose the port to the internet.
+- One Chrome profile holds one server address. To reach two machines, use two profiles, or keep one of them behind an SSH tunnel.
+
+For a server on the public internet, prefer an SSH tunnel that maps the remote bridge onto your own loopback and leave the extension address at `127.0.0.1`:
+
+```bash
+ssh -L 18791:127.0.0.1:18791 user@server
+```

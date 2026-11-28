@@ -6,6 +6,7 @@ import { WebSocketServer, WebSocket } from 'ws';
 import { PORT, MAX_MESSAGE, DEADLINE_MS, PARALLEL_TABS, MESSAGE_UNREAD_MAX } from '../extension/protocol.js';
 import { classifyPairingCode, generatePairingCode, normalizePairingCode } from '../extension/pairing-code.js';
 import { candidatePorts, portStateDir, preferencePath, probePort, readPreferredPort, writePreferredPort } from './port-selector.js';
+import { DEFAULT_HOST, normalizeServerHost } from '../extension/host.js';
 
 const equal = (a, b) => typeof a === 'string' && typeof b === 'string' && a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b));
 const extensionOrigin = /^chrome-extension:\/\/[a-p]{32}$/;
@@ -36,11 +37,14 @@ function describeDetach({ reason, tabExists, closeSource }) {
 }
 
 export class Bridge {
-  constructor({ port = PORT, auto = false, portCandidates, baseStateDir, stateDir, name, probe = probePort, deadlineMs = DEADLINE_MS, claimWaitMs = CLAIM_WAIT_MS } = {}) {
+  constructor({ port = PORT, auto = false, portCandidates, baseStateDir, stateDir, name, bindHost = DEFAULT_HOST, probe = probePort, deadlineMs = DEADLINE_MS, claimWaitMs = CLAIM_WAIT_MS } = {}) {
     // Optional label the agent side shows in the popup so the user can tell
     // Harnesses apart; it is display-only and never used for routing.
     this.name = normalizeName(name);
     this.port = auto ? undefined : port;
+    // Loopback by default. A private address is opt-in through
+    // DSH_CHROME_USE_BIND_HOST so a plain install never listens on the network.
+    this.bindHost = normalizeServerHost(bindHost);
     this.requestedPort = auto ? undefined : port;
     this.auto = auto;
     this.portCandidates = portCandidates;
@@ -112,8 +116,18 @@ export class Bridge {
     http.headersTimeout = 5000;
     const ws = new WebSocketServer({ noServer: true, maxPayload: MAX_MESSAGE, perMessageDeflate: false });
     const boundPort = () => http.address()?.port ?? port;
+    // The extension dials bindHost, so its Host header carries that name. When
+    // listening on loopback also accept the other loopback spellings.
+    const hostsFor = () => {
+      const current = boundPort();
+      if (['127.0.0.1', 'localhost', '::1'].includes(this.bindHost)) {
+        return new Set([`127.0.0.1:${current}`, `localhost:${current}`, `[::1]:${current}`]);
+      }
+      const address = this.bindHost.includes(':') ? `[${this.bindHost}]` : this.bindHost;
+      return new Set([`${address}:${current}`]);
+    };
     http.on('upgrade', (req, socket, head) => {
-      if (this.closed || req.url !== '/bridge' || req.headers.host !== `127.0.0.1:${boundPort()}` || !extensionOrigin.test(req.headers.origin ?? '') || ws.clients.size >= 4) {
+      if (this.closed || req.url !== '/bridge' || !hostsFor().has(req.headers.host) || !extensionOrigin.test(req.headers.origin ?? '') || ws.clients.size >= 4) {
         socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
         return;
       }
@@ -121,7 +135,7 @@ export class Bridge {
     });
     await new Promise((resolve, reject) => {
       http.once('error', reject);
-      http.listen(port, '127.0.0.1', () => {
+      http.listen(port, this.bindHost, () => {
         http.off('error', reject);
         resolve();
       });
@@ -171,6 +185,7 @@ export class Bridge {
     return {
       connected: this.peer?.readyState === WebSocket.OPEN,
       port: this.port,
+      bindHost: this.bindHost,
       ...(this.requestedPort !== undefined && this.requestedPort !== this.port ? { requestedPort: this.requestedPort } : {}),
       extensionVersion: this.peer?.extensionVersion ?? null,
       claimedTabs: [...this.claims.keys()],
