@@ -91,7 +91,9 @@ https://chromewebstore.google.com/detail/anobmlnjdeahldefeikjdmmnckphpdhc
 
 **Does the extension collect user data?** No（扩展本身不向作者或第三方服务器传输数据）
 
-扩展只连接本机 `127.0.0.1` 上的用户自己的 Harness。页面文字、标题、URL、截图和调试信息会经本机回环进入用户的 Harness 会话；之后是否发送给用户选择的模型提供方，由用户自己的 Harness 配置和模型服务政策决定，扩展不参与、也无法控制。扩展不内置统计、广告或远程上报。
+扩展默认只连接本机 `127.0.0.1` 上的用户自己的 Harness。页面文字、标题、URL、截图和调试信息会经本机回环进入用户的 Harness 会话；之后是否发送给用户选择的模型提供方，由用户自己的 Harness 配置和模型服务政策决定，扩展不参与、也无法控制。
+
+0.18.0 起，用户可以在弹窗的「进阶：服务器地址」里改连同一内网内的另一台机器的 Harness（例如 Chrome 跑在远程桌面上）。该字段只接受环回和内网地址，域名和公网 IP 会被拒绝；填写后页面内容会以明文 WebSocket 发往该地址，地址由用户自己输入，也可以随时清空回到默认。扩展不内置统计、广告或远程上报。
 
 | Data Type | Collected? | Transmitted Off-Device? | Purpose | Shared with Third Parties? |
 |-----------|-----------|------------------------|---------|---------------------------|
@@ -103,7 +105,7 @@ https://chromewebstore.google.com/detail/anobmlnjdeahldefeikjdmmnckphpdhc
 | Location | No | No | — | No |
 | Web history | No（只按请求读取当前标签页标题/URL） | No | 选择操作对象 | No |
 | User activity | No（点击/输入只作用于用户指定的页面） | No | 执行用户要求的操作 | No |
-| Website content | No（仅本机处理） | No | 读取页面结构、截图、控制台/网络日志 | No |
+| Website content | No（仅本机处理；填写进阶服务器地址后除外） | 默认 No；启用进阶服务器地址时 Yes（只发往用户指定的内网机器） | 读取页面结构、截图、控制台/网络日志 | No（不发给作者或第三方） |
 | Clipboard | No（只写不读） | No | 用户点击菜单时写入一条标签页引用 | No |
 
 ### Data Use Certification
@@ -137,6 +139,7 @@ https://chromewebstore.google.com/detail/anobmlnjdeahldefeikjdmmnckphpdhc
 
 | Version | Date | Changes | Status |
 |---------|------|---------|--------|
+| 0.18.0 | 2026-11-28 | 进阶可选项：弹窗新增「服务器地址」，可连同一内网的另一台机器；只接受环回和内网 IP，默认仍是 `127.0.0.1`。CSP 的 `connect-src` 从固定回环放宽为任意 `ws:` 目标，因为 CSP 无法表达网段；实际可用地址由弹窗校验和 Harness 侧的 `DSH_CHROME_USE_BIND_HOST` 限制。 | Draft（待上传商店） |
 | 0.17.0 | 2026-11-26 | 标签页右键菜单复制 DSH Chrome Use 引用；新增 `contextMenus`、`offscreen`、`clipboardWrite` 权限，只写剪贴板不读取。 | Draft（待上传商店） |
 | 0.16.1 | 2026-11-26 | 调试器被其他扩展的 `chrome-extension://` frame 拦截时列出 frame 与扩展 ID，并给 `chrome://extensions/?id=` 定位；Chrome 主动 detach 但标签页还在时保留占用；detach 原因和关闭方（idle / chat / cleanup / disconnect）写进提示；`chrome_doctor` 在未附加时返回标签页状态和 frame 列表。新增 `webNavigation` 权限。 | Draft（待上传商店） |
 | 0.16.0 | 2026-11-24 | 输入框 `@` 选择标签页；商店安装与自动重连保持稳定。 | Published |
@@ -152,6 +155,7 @@ https://chromewebstore.google.com/detail/anobmlnjdeahldefeikjdmmnckphpdhc
 - 调试器附加会被页面中属于其他扩展的 `chrome-extension://` frame 阻止（Chromium 行为）。0.16.1 起会列出是哪个扩展、哪个 frame，并提示到 `chrome://extensions/?id=<id>` 禁用；这不是本扩展能绕过的限制。
 - 多个 Harness 同时连接时，标签页占用由扩展统一协调；扩展重载或浏览器重启会清空占用，需要重新 claim。
 - `webNavigation` 只在附加失败时按标签页读取 frame 列表，用于诊断，不用于追踪浏览历史。
+- 0.18.0 放宽 `connect-src` 到 `ws:`：CSP 不能写网段，所以地址限制由弹窗校验（只允许环回和内网 IP）和 Harness 侧绑定地址共同保证；默认仍只连 `127.0.0.1`，连接仍是明文 WebSocket，用户可在弹窗里看到并清除该地址。
 - 0.17.0 新增 `clipboardWrite`：只写不读，且只在用户点击标签页右键菜单时写入一条引用；不采集剪贴板内容。
 
 ### Rejection History

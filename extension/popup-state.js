@@ -22,16 +22,22 @@ export function popupState({ connections = [], reconnecting = false } = {}) {
   };
 }
 
-export function connectionRow({ port, connected = false, version = null, name = null, error = '' } = {}) {
+export function connectionRow({ port, host = null, connected = false, version = null, name = null, error = '' } = {}) {
   const state = connected ? 'connected' : error ? 'error' : 'saved';
+  // A non-default host is the interesting part of the row: without it two
+  // connections on the same port look identical.
+  const remote = host && host !== '127.0.0.1' && host !== 'localhost';
+  const address = remote ? (host.includes(':') ? `[${host}]` : host) : null;
+  const endpoint = address ? `${address}:${port}` : String(port);
   return {
     port,
+    host: host || null,
     name: name || null,
     state,
     connected: Boolean(connected),
     // A harness may name itself when it connects; the port stays visible so the
     // popup still tells the user exactly which bridge the row refers to.
-    title: name ? `${name} · ${port}` : `端口 ${port}`,
+    title: name ? `${name} · ${endpoint}` : address ? endpoint : `端口 ${port}`,
     meta: connected
       ? `已连接${version ? ` · ${version}` : ''}`
       : error

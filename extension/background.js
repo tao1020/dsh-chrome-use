@@ -3,6 +3,7 @@ import { createIdleTabs, IDLE_ALARM, IDLE_CHECK_MINUTES, IDLE_CLOSE_SECONDS, MAX
 import { TabLeases } from './leases.js';
 import { PORT, MAX_MESSAGE, PARALLEL_TABS, MESSAGE_UNREAD_MAX, validateArgs } from './protocol.js';
 import { classifyPairingCode } from './pairing-code.js';
+import { DEFAULT_HOST, bridgeUrl, normalizeServerHost } from './host.js';
 import { classifyFailure } from './failures.js';
 import { TAB_REFERENCE_MENU_ID, copyTabReference, createTabReferenceMenu } from './tab-reference.js';
 
@@ -139,7 +140,14 @@ function validConnections(value) {
     if (!item || !isPort(item.port) || !isToken(item.token) || seen.has(item.port)) continue;
     seen.add(item.port);
     const name = cleanName(item.name);
-    connections.push({ port: item.port, token: item.token, ...(name ? { name } : {}) });
+    // A stored host that no longer validates is dropped rather than relabelled
+    // loopback: dialling a token to some other address is exactly what this
+    // record exists to prevent, so the entry must be paired again.
+    let host = DEFAULT_HOST;
+    if (item.host !== undefined) {
+      try { host = normalizeServerHost(item.host); } catch { continue; }
+    }
+    connections.push({ port: item.port, token: item.token, host, ...(name ? { name } : {}) });
   }
   return connections.sort((a, b) => a.port - b.port);
 }
@@ -245,18 +253,20 @@ function createClient(port) {
   };
 }
 
-async function saveToken(client, port, token, name) {
+async function saveToken(client, port, token, name, host = DEFAULT_HOST) {
   return mutateStorage(async () => {
     if (!isCurrent(client)) return false;
     const stored = await readStored();
     const connections = validConnections(stored.connections);
     const existing = connections.find(item => item.port === port);
     if (!existing && connections.length >= MAX_CONNECTIONS) throw new Error(`TOO_MANY_CONNECTIONS: forget a saved Harness before pairing another (maximum ${MAX_CONNECTIONS})`);
-    client.persist.wasSaved = Boolean(existing);
+    // A token belongs to one machine: pairing with a different host is a fresh
+    // pairing, so the message cursor starts over instead of reusing the old one.
+    client.persist.wasSaved = Boolean(existing) && existing.host === host;
     if (!isCurrent(client)) return false;
     const keptName = cleanName(name) ?? existing?.name;
     const next = connections.filter(item => item.port !== port)
-      .concat({ port, token, ...(keptName ? { name: keptName } : {}) })
+      .concat({ port, token, host, ...(keptName ? { name: keptName } : {}) })
       .sort((a, b) => a.port - b.port);
     await chrome.storage.local.set({ connections: next, enabled: true });
     await chrome.storage.local.remove('token');
@@ -479,16 +489,30 @@ function retireClient(client) {
   return drainClient(client);
 }
 
-async function startClient(client, { code, restoreEpoch } = {}) {
+async function storedHost() {
+  try {
+    return normalizeServerHost((await chrome.storage.local.get('serverHost')).serverHost);
+  } catch {
+    return DEFAULT_HOST;
+  }
+}
+
+async function startClient(client, { code, restoreEpoch, host: requestedHost } = {}) {
   const port = client.port;
+  const storedConnections = (await savedConnections()).connections;
+  const known = storedConnections.find(item => item.port === port);
+  // Prefer the address this port was paired with. A token is only ever sent to
+  // the machine that issued it.
+  const host = requestedHost ? normalizeServerHost(requestedHost) : known?.host ?? await storedHost();
   const staleRestore = () => restoreEpoch !== undefined && restoreEpoch !== lifecycleEpoch;
   if (staleRestore()) throw new Error(`COMMAND_CANCELED: restore for port ${port} was canceled`);
   if (!code && forgottenPorts.has(port)) throw new Error(`COMMAND_CANCELED: port ${port} was forgotten`);
-  const { connections } = await savedConnections();
+  const connections = storedConnections;
   if (staleRestore() || client.revoked) throw new Error(`COMMAND_CANCELED: connection to port ${port} was canceled`);
   if (!code && forgottenPorts.has(port)) throw new Error(`COMMAND_CANCELED: port ${port} was forgotten`);
-  const saved = connections.find(item => item.port === port);
+  const saved = known;
   if (!code && !saved) throw new Error(`No saved pairing for port ${port}. Enter the 8-digit code from Harness.`);
+  if (!code && saved && saved.host !== host) throw new Error(`PAIRING_REQUIRED: ${host}:${port} is a different machine from ${saved.host}:${port}; enter its pairing code.`);
   if (!saved) {
     if (connections.length + pairingInFlight.size >= MAX_CONNECTIONS) throw new Error(`TOO_MANY_CONNECTIONS: forget a saved Harness before pairing another (maximum ${MAX_CONNECTIONS})`);
     pairingInFlight.add(port);
@@ -498,8 +522,9 @@ async function startClient(client, { code, restoreEpoch } = {}) {
 
   let socket;
   try {
-    socket = new WebSocket(`ws://127.0.0.1:${port}/bridge`);
+    socket = new WebSocket(bridgeUrl(host, port));
     client.socket = socket;
+    client.host = host;
     return await new Promise((resolve, reject) => {
       let done = false;
       let timer;
@@ -513,7 +538,7 @@ async function startClient(client, { code, restoreEpoch } = {}) {
         finish(reject, error instanceof Error ? error : new Error(String(error)));
         try { socket.close(); } catch {}
       };
-      timer = setTimeout(() => fail(new Error(`Connection to port ${port} timed out. Check that a Harness bridge is listening there.`)), 6000);
+      timer = setTimeout(() => fail(new Error(`Connection to ${host}:${port} timed out. Check that a Harness bridge is listening there.`)), 6000);
       client.abortStart = () => fail(new Error(`COMMAND_CANCELED: connection to port ${port} was canceled`));
       socket.onopen = () => {
         if (!isCurrent(client, socket)) return;
@@ -527,7 +552,7 @@ async function startClient(client, { code, restoreEpoch } = {}) {
           if (message.type === 'ready') {
             if (message.protocol !== 1 || !isToken(message.token)) throw new Error('Unsupported bridge protocol');
             const name = cleanName(message.name);
-            const persisted = await saveToken(client, port, message.token, name);
+            const persisted = await saveToken(client, port, message.token, name, host);
             if (!persisted || !isCurrent(client, socket)) {
               fail(new Error(`COMMAND_CANCELED: connection to port ${port} was canceled`));
               return;
@@ -596,7 +621,12 @@ function connectPort(port, options = {}) {
     beginIntent(port);
   }
   const existing = clients.get(port);
-  if (existing?.connected) return Promise.resolve(existing);
+  if (existing?.connected) {
+    // Same host: keep the live socket. A different host needs a new dial, and the
+    // old token must not be replayed to the new machine.
+    if (!options.host || options.host === existing.host) return Promise.resolve(existing);
+    return retireClient(existing).catch(() => {}).then(() => connectPort(port, options));
+  }
   if (existing?.ready) return existing.ready;
   if (existing) retireClient(existing).catch(() => {});
   const client = createClient(port);
@@ -1037,7 +1067,12 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
       } else {
         port = suppliedPort ?? PORT;
       }
-      await connectPort(port, code ? { code } : undefined);
+      const host = message.host === undefined ? undefined : normalizeServerHost(message.host);
+      await connectPort(port, { ...(code ? { code } : {}), ...(host === undefined ? {} : { host }) });
+      // Persist only after the handshake succeeded: a typo must not replace the
+      // address that reconnect uses. A token is stored with its own host, so a
+      // failure here leaves the previous pairing intact.
+      if (host !== undefined) await chrome.storage.local.set({ serverHost: host });
     } else if (message.action === 'disconnect') await disconnectAll();
     else if (message.action === 'forget') await forgetConnection(popupPort(message.port));
     else if (message.action !== 'status') throw new Error('Unknown action');
@@ -1050,7 +1085,7 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
       reconnecting: auto && !connected,
       connections: connections.map(item => {
         const client = clients.get(item.port);
-        return { port: item.port, name: client?.name ?? item.name ?? null, connected: Boolean(client?.connected), version: client?.version ?? null, error: client?.lastError || portErrors.get(item.port) || '' };
+        return { port: item.port, host: client?.host ?? item.host ?? null, name: client?.name ?? item.name ?? null, connected: Boolean(client?.connected), version: client?.version ?? null, error: client?.lastError || portErrors.get(item.port) || '' };
       }),
       enabled: auto,
       error: lastError,

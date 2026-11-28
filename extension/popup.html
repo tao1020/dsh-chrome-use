@@ -15,6 +15,12 @@
         <input id="code" aria-label="配对码" inputmode="text" autocapitalize="characters" autocomplete="off" spellcheck="false" maxlength="8" placeholder="粘贴 8 位配对码">
         <button type="submit">连接</button>
       </div>
+      <details class="advanced">
+        <summary>进阶：服务器地址</summary>
+        <label class="help" for="server-host">Harness 所在机器，默认 127.0.0.1。只接受环回或内网 IP（10/8、172.16/12、192.168/16、169.254/16、::1、fc00::/7、fe80::/10），不接受域名。改完请重新连接。</label>
+        <input id="server-host" aria-label="服务器地址" inputmode="text" autocapitalize="off" autocomplete="off" spellcheck="false" placeholder="127.0.0.1">
+        <p class="help">页面正文、截图和调试信息会以明文发到这台机器，所以这里只允许内网和环回地址。公网服务器请用 SSH 隧道映射到本机。</p>
+      </details>
       <p id="error" role="alert"></p>
       <p class="help pair-help"><a href="https://github.com/tao1020/dsh-chrome-use/blob/main/README.md#安装" target="_blank" rel="noreferrer">使用帮助（Help: install and pair）</a></p>
     </form>

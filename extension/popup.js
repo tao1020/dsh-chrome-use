@@ -1,4 +1,5 @@
 import { popupState } from './popup-state.js';
+import { DEFAULT_HOST, normalizeServerHost } from './host.js';
 import { IDLE_CLOSE_SECONDS, MAX_IDLE_CLOSE_SECONDS, IDLE_TIMEOUT_SETTING } from './idle-tabs.js';
 
 const $ = id => document.getElementById(id);
@@ -41,7 +42,7 @@ function connectionItem(row) {
     connect.type = 'button';
     connect.className = 'link';
     connect.textContent = '连接';
-    connect.addEventListener('click', () => act('connect', { port: row.port }));
+    connect.addEventListener('click', () => act('connect', { port: row.port, ...(row.host ? { host: row.host } : {}) }));
     actions.append(connect);
   }
   if (row.canForget) {
@@ -125,9 +126,23 @@ chrome.storage.local.get('autoCloseIdleTabs').then(
   () => {}, // Keep the default (idle cleanup off) when settings cannot be read.
 );
 idleClose.addEventListener('change', () => { chrome.storage.local.set({ autoCloseIdleTabs: idleClose.checked }); });
+// Show the saved address so the popup always says which machine it dials.
+chrome.storage.local.get('serverHost').then(
+  ({ serverHost }) => { $('server-host').value = serverHost ?? ''; },
+  () => {}, // Keep the loopback placeholder when storage cannot be read.
+);
 $('pair-form').addEventListener('submit', async event => {
   event.preventDefault();
-  const result = await act('connect', { code: $('code').value });
+  let host;
+  try {
+    host = normalizeServerHost($('server-host').value);
+  } catch (error) {
+    $('error').textContent = error.message;
+    return;
+  }
+  $('error').textContent = '';
+  $('server-host').value = host === DEFAULT_HOST ? '' : host;
+  const result = await act('connect', { code: $('code').value, host });
   if (result) $('code').value = '';
 });
 $('disconnect').addEventListener('click', () => act('disconnect'));

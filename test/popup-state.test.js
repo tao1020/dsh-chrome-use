@@ -48,3 +48,15 @@ test('a failed connection keeps the error behind the icon without hiding Connect
   assert.match(row.error, /timed out/);
   assert.match(row.hint, /Harness 可能已离线/);
 });
+
+test('a remote host is visible even when the harness has no name', () => {
+  assert.equal(connectionRow({ port: 18791, host: '192.168.1.20', name: null }).title, '192.168.1.20:18791');
+  assert.equal(connectionRow({ port: 18791, host: '192.168.1.20', name: 'mac' }).title, 'mac · 192.168.1.20:18791');
+  assert.equal(connectionRow({ port: 18791, host: '::1', name: 'mac' }).title, 'mac · [::1]:18791');
+  assert.equal(connectionRow({ port: 18791, host: 'fd12::10' }).title, '[fd12::10]:18791');
+  assert.equal(connectionRow({ port: 18791, host: 'localhost' }).title, '端口 18791');
+  // The row hands its address to the Connect button, so that button dials the
+  // machine this row was paired with instead of the global default.
+  assert.equal(connectionRow({ port: 18791, host: '192.168.1.20' }).host, '192.168.1.20');
+  assert.equal(connectionRow({ port: 18791 }).host, null);
+});

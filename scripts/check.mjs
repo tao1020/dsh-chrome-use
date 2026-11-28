@@ -22,6 +22,8 @@ assert.equal(manifest.manifest_version, 3);
 assert.deepEqual(manifest.permissions, ['debugger', 'tabs', 'tabGroups', 'storage', 'alarms', 'downloads', 'webNavigation', 'contextMenus', 'offscreen', 'clipboardWrite']);
 assert.equal(manifest.host_permissions, undefined);
 assert.equal(manifest.content_scripts, undefined);
-assert.equal(manifest.content_security_policy.extension_pages, "script-src 'self'; object-src 'none'; connect-src ws://127.0.0.1:*");
+// CSP cannot express address ranges, so the allowed host is enforced in the popup
+// and by the bridge bind address; keep the rest of the policy locked down.
+assert.equal(manifest.content_security_policy.extension_pages, "script-src 'self'; object-src 'none'; connect-src ws:");
 assert.ok(pkg.dsh.bundle.patch);
 console.log('Conflict markers, JavaScript syntax, generated client, package and extension manifest checks passed.');

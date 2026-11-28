@@ -6,7 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { Bridge } from './bridge.js';
 import { storeUrl } from './links.js';
 import { registerChromeUseSkill } from './skill.js';
-import { TOOLS, validateArgs, parsePort } from '../extension/protocol.js';
+import { TOOLS, validateArgs } from '../extension/protocol.js';
 import { failureFromError, formatFailure } from '../extension/failures.js';
 import { buildIssueReport } from './report.js';
 import { createKeepAwake } from './keep-awake.js';
@@ -18,12 +18,7 @@ const pluginVersion = createRequire(import.meta.url)('../package.json').version;
 export const name = 'dsh-chrome-use';
 export const inject = ['tools'];
 
-export function bridgeOptions(env, baseStateDir) {
-  const configured = env?.DSH_CHROME_USE_PORT?.trim();
-  const options = configured ? { port: parsePort(configured), baseStateDir } : { auto: true, baseStateDir };
-  const name = env?.DSH_CHROME_USE_NAME?.trim().slice(0, 40);
-  return name ? { ...options, name } : options;
-}
+export { bridgeOptions } from './bridge-options.js';
 
 // Diagnostics stay available even in a narrowed deployment: without them a
 // harness cannot explain why a tool is missing.
