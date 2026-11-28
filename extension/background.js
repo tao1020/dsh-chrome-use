@@ -1,7 +1,7 @@
 import { BrowserController } from './controller.js';
 import { createIdleTabs, IDLE_ALARM, IDLE_CHECK_MINUTES, IDLE_CLOSE_SECONDS, MAX_IDLE_CLOSE_SECONDS, IDLE_SETTING, IDLE_TIMEOUT_SETTING } from './idle-tabs.js';
 import { TabLeases } from './leases.js';
-import { PORT, MAX_MESSAGE, PARALLEL_TABS, MESSAGE_UNREAD_MAX, validateArgs } from './protocol.js';
+import { PORT, MAX_MESSAGE, CAPABILITIES, MESSAGE_UNREAD_MAX, validateArgs } from './protocol.js';
 import { classifyPairingCode } from './pairing-code.js';
 import { DEFAULT_HOST, bridgeUrl, normalizeServerHost } from './host.js';
 import { classifyFailure } from './failures.js';
@@ -542,7 +542,7 @@ async function startClient(client, { code, restoreEpoch, host: requestedHost } =
       client.abortStart = () => fail(new Error(`COMMAND_CANCELED: connection to port ${port} was canceled`));
       socket.onopen = () => {
         if (!isCurrent(client, socket)) return;
-        socket.send(JSON.stringify({ ...(code ? { type: 'pair', code } : { type: 'auth', token: saved.token }), version: chrome.runtime.getManifest().version, features: [PARALLEL_TABS] }));
+        socket.send(JSON.stringify({ ...(code ? { type: 'pair', code } : { type: 'auth', token: saved.token }), version: chrome.runtime.getManifest().version, features: CAPABILITIES }));
       };
       socket.onmessage = async event => {
         if (!isCurrent(client, socket)) return;

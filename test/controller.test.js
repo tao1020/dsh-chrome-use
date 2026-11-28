@@ -1245,3 +1245,112 @@ test('the click point is translated from a same-origin frame into top-level coor
   assert.deepEqual([inner.x, inner.y], [311, 157]);
   assert.equal(inner.frame, true);
 });
+
+test('snapshot pages through the accessibility tree', async () => {
+  const nodes = [
+    { role: { value: 'button' }, name: { value: 'One' }, backendDOMNodeId: 1 },
+    { role: { value: 'button' }, name: { value: 'Two' }, backendDOMNodeId: 2 },
+    { role: { value: 'button' }, name: { value: 'Three' }, backendDOMNodeId: 3 },
+  ];
+  const { controller } = fixture({ 'Accessibility.getFullAXTree': () => ({ nodes }) });
+  await controller.execute('claim', { tabId: 7 });
+  const first = await controller.execute('snapshot', { tabId: 7, maxElements: 2 });
+  assert.deepEqual(first.elements.map(entry => entry.name), ['One', 'Two']);
+  assert.equal(first.truncated, true);
+  assert.equal(first.nextOffset, 2);
+  const second = await controller.execute('snapshot', { tabId: 7, maxElements: 2, offset: 2 });
+  assert.deepEqual(second.elements.map(entry => entry.name), ['Three']);
+  assert.equal(second.truncated, false);
+  assert.equal(second.nextOffset, undefined);
+});
+
+test('snapshot region lists only the accessibility nodes inside one element', async () => {
+  const nodes = [
+    { nodeId: 'a', role: { value: 'form' }, name: { value: '' }, backendDOMNodeId: 100, childIds: ['b'] },
+    { nodeId: 'b', role: { value: 'button' }, name: { value: 'Inside' }, backendDOMNodeId: 2, childIds: [] },
+    { nodeId: 'c', role: { value: 'button' }, name: { value: 'Outside' }, backendDOMNodeId: 3, childIds: [] },
+  ];
+  const { controller } = fixture({
+    'Accessibility.getFullAXTree': () => ({ nodes }),
+    'DOM.getDocument': () => ({ root: { nodeId: 1 } }),
+    'DOM.querySelector': () => ({ nodeId: 10 }),
+    'DOM.describeNode': () => ({ node: { backendNodeId: 100 } }),
+  });
+  await controller.execute('claim', { tabId: 7 });
+  const result = await controller.execute('snapshot', { tabId: 7, region: '#checkout' });
+  assert.deepEqual(result.elements.map(entry => entry.name), ['Inside']);
+  assert.match(result.regionNote, /#checkout/);
+  const missing = fixture({ 'Accessibility.getFullAXTree': () => ({ nodes }), 'DOM.getDocument': () => ({ root: { nodeId: 1 } }), 'DOM.querySelector': () => ({ nodeId: 0 }) });
+  await missing.controller.execute('claim', { tabId: 7 });
+  await assert.rejects(missing.controller.execute('snapshot', { tabId: 7, region: '#gone' }), /REGION_NOT_FOUND/);
+});
+
+test('a ref invalidated by a re-render is rebound when role and name stay unique', async () => {
+  let tree = [{ role: { value: 'button' }, name: { value: 'Submit' }, backendDOMNodeId: 42 }];
+  const { controller, calls } = fixture({
+    'Accessibility.getFullAXTree': () => ({ nodes: tree }),
+    'DOM.resolveNode': params => {
+      if (params.backendNodeId === 42) throw new Error('No node with given id found');
+      return { object: { objectId: 'object' } };
+    },
+  });
+  await controller.execute('claim', { tabId: 7 });
+  const snapshot = await controller.execute('snapshot', { tabId: 7 });
+  const ref = snapshot.elements[0].ref;
+  // The page re-rendered: the old node is gone, the same button has a new id.
+  tree = [{ role: { value: 'button' }, name: { value: 'Submit' }, backendDOMNodeId: 77 }];
+  await controller.execute('click', { tabId: 7, ref });
+  assert.ok(calls.some(([method]) => method === 'Input.dispatchMouseEvent'));
+  const after = await controller.execute('snapshot', { tabId: 7 });
+  assert.equal(after.healed, 1);
+
+  const ambiguous = fixture({
+    'Accessibility.getFullAXTree': () => ({ nodes: tree }),
+    'DOM.resolveNode': params => {
+      if (params.backendNodeId === 77) throw new Error('No node with given id found');
+      return { object: { objectId: 'object' } };
+    },
+  });
+  await ambiguous.controller.execute('claim', { tabId: 7 });
+  const saved = await ambiguous.controller.execute('snapshot', { tabId: 7 });
+  const tree2 = [
+    { role: { value: 'button' }, name: { value: 'Submit' }, backendDOMNodeId: 90 },
+    { role: { value: 'button' }, name: { value: 'Submit' }, backendDOMNodeId: 91 },
+  ];
+  ambiguous.calls.length = 0;
+  await assert.rejects(ambiguous.controller.execute('click', { tabId: 7, ref: saved.elements[0].ref }), /STALE_ELEMENT/);
+});
+
+test('network lists can be filtered by method, status and URL text', async () => {
+  const { controller, listeners } = fixture();
+  await controller.execute('claim', { tabId: 7 });
+  const send = (method, url, status) => {
+    listeners.event({ tabId: 7 }, 'Network.requestWillBeSent', { requestId: `${method}-${url}`, request: { method, url }, type: 'Fetch' });
+    listeners.event({ tabId: 7 }, 'Network.responseReceived', { requestId: `${method}-${url}`, response: { status }, type: 'Fetch' });
+  };
+  send('GET', 'https://example.com/api/users', 200);
+  send('POST', 'https://example.com/api/users', 500);
+  send('GET', 'https://example.com/static/app.js', 200);
+  assert.equal((await controller.execute('network', { tabId: 7 })).requests.length, 3);
+  const posts = await controller.execute('network', { tabId: 7, method: 'post' });
+  assert.deepEqual(posts.requests.map(item => item.method), ['POST']);
+  const failing = await controller.execute('network', { tabId: 7, status: 500 });
+  assert.deepEqual(failing.requests.map(item => item.status), [500]);
+  const api = await controller.execute('network', { tabId: 7, urlContains: '/api/' });
+  assert.equal(api.requests.length, 2);
+  assert.equal((await controller.execute('network', { tabId: 7, urlContains: '/api/', method: 'GET' })).requests.length, 1);
+});
+
+test('storage reads localStorage and sessionStorage without writing', async () => {
+  const { controller, calls } = fixture({
+    'Runtime.evaluate': () => ({ result: { value: '{"theme":"dark","token":"abc"}' } }),
+  });
+  await controller.execute('claim', { tabId: 7 });
+  const local = await controller.execute('storage', { tabId: 7, kind: 'local' });
+  assert.deepEqual(local.entries, { theme: 'dark', token: 'abc' });
+  assert.equal(local.total, 2);
+  assert.match(local.note, /untrusted/);
+  const evaluate = calls.find(([method]) => method === 'Runtime.evaluate');
+  assert.match(evaluate[1].expression, /localStorage/);
+  assert.doesNotMatch(evaluate[1].expression, /setItem|removeItem|clear\(/);
+});
