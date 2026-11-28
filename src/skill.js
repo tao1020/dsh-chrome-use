@@ -24,6 +24,12 @@ export const CAPABILITIES = [
   ['保持 Mac 唤醒', 'chrome_keep_awake'],
   ['失败后的结构化自愈指引', 'Failure: {...}'],
   ['进阶：跨机器连接（仅内网地址）', 'DSH_CHROME_USE_BIND_HOST'],
+  ['快照分页与局部读取', 'maxElements'],
+  ['失效元素自动重绑', 'healed'],
+  ['同站跨源 iframe 读取与点击', 'frame=true'],
+  ['网络过滤与请求模拟', 'chrome_mock'],
+  ['Cookie 与本地存储只读查看', 'chrome_storage'],
+  ['扩展能力自我报告', 'missingCapabilities'],
 ];
 
 export const chromeUseSkill = {
@@ -67,7 +73,7 @@ ${CAPABILITIES.map(([label]) => `- ${label}`).join('\n')}
 
 1. 打开新页面用 chrome_open，必须带 group（1-40 字符）。同一系列任务复用同一个组名，页面会进同一个 Chrome 标签页组。
 2. 操作已有页面时，先用 chrome_tabs 找到标签页，再用 chrome_claim 占用。一个标签页同时只能被一个会话占用；不同会话可以同时操作不同标签页。用户消息里带「[Chrome 标签页 #123]」时（用户在输入框 @ 选中的标签页，或者在标签页上右键选择“复制 DSH Chrome Use 引用”后粘贴），直接用其中的 tabId，不要再靠 chrome_tabs 从标题里猜；仍然要先 chrome_claim 占用，没权限时按 TAB_NOT_OWNED / TAB_BUSY 处理。
-3. 操作前先 chrome_snapshot 获取元素 ref。读正文用 format="text" 或 format="markdown"（不返回 ref，也不清空旧 ref）；元素太多或找不到时用 chrome_find 按 name/role 查找。导航或页面变化后旧 ref 会失效，需要重新读取，不能猜 ref。快照里带 frame=true 的元素在同源子框架里，点击和填写可以直接用；跨域子框架读不到。challenge 字段不为空说明页面出现验证码/人机校验，需要用户在 Chrome 里完成。
+3. 操作前先 chrome_snapshot 获取元素 ref。读正文用 format="text" 或 format="markdown"（不返回 ref，也不清空旧 ref）；元素太多或找不到时用 chrome_find 按 name/role 查找，长页面也可以给 maxElements 和 offset 分页，回复里的 nextOffset 表示还有下一页，region 传入 CSS 选择器则只读该子树。导航或页面变化后旧 ref 会失效；扩展会自动尝试重绑一次，回复里的 healed 是重绑成功的数量，仍然报 STALE_ELEMENT 时再重新读取，不能猜 ref。快照里带 frame=true 的元素在子框架里（frameUrl 指明来源），点击、填写和选择可以直接用；这类框架里的点击走页面 JavaScript，不是真实鼠标事件。只有同站（same-site）的跨源框架能读，例如同域名不同端口或协议；跨站框架（页面里嵌 YouTube、支付或验证码组件）是独立的浏览器进程，扩展读不到，也不会出现在快照里，需要请用户自己操作。challenge 字段不为空说明页面出现验证码/人机校验，需要用户在 Chrome 里完成。
    需要整页或某个区域的正文时用 chrome_content（selector 选区域，format 可选 markdown/text/html/json，maxChars 限制长度）；需要按字段批量取列表（如每张卡片的价格、链接）时用 chrome_scrape（fields 写 "name: selector" 或 "name: selector@attr"，selector 是容器选择器时逐容器重复）。两者都能穿透 open shadow DOM，都不点击页面。
 4. 用 chrome_click（count=2 双击，button=right 右键）、chrome_fill、chrome_key（支持 meta+a、ctrl+shift+k 等组合）、chrome_scroll 执行操作；填写不会自动提交表单。
 5. 悬停菜单用 chrome_hover；拖拽用 chrome_drag（拖拽源不一定是按钮，有的 div[draggable] 在快照里是 role=group、名称为空，先按快照上下文找到它的 ref；放置区没有 ref 时用 toText 按文字找）；原生下拉用 chrome_select。
@@ -81,6 +87,9 @@ ${CAPABILITIES.map(([label]) => `- ${label}`).join('\n')}
 13. 预计任务会持续几分钟、用户可能要离开时，先调用 chrome_keep_awake（默认 30 分钟，最多 480 分钟），让 Mac 不因空闲息屏或空闲锁屏而中断；再调用会续期，off=true 提前停止。它只适用于 macOS，不能解锁已经锁定的屏幕，也不能覆盖手动锁屏、合盖或公司电源策略。任务结束或不再需要时传 off=true。
 14. 结束时用 chrome_release 释放页面；本会话用 chrome_open 打开的页面用 chrome_cleanup 批量关闭，避免留下几十个标签页。dryRun=true 先看会关哪些，keep=[tabId] 保留指定的页面。它只关本会话自己打开的页面，不会关用户自己开的页面、只是 claim 的页面或其他会话的页面；WebSocket 断开时扩展也会自动做同样的清理。单个页面也可以直接用 chrome_close。Agent 关闭默认会自动确认网页的 beforeunload（如“离开此网站？”），不再等你手点；需要保留这个提示时传 force=false，或在扩展弹窗取消“关闭时不再确认”。
 15. 如果打开了扩展弹窗的「空闲标签页」开关，本会话用 chrome_open 打开、已经 release、并且超过设置的空闲时间（默认 30 分 0 秒，可在弹窗填 1 秒到 600 分钟）没有 Agent 操作的页面会自动关闭，避免任务结束后留下无人使用的标签页。每次对该页执行命令都会重新计时；还在调试、被 claim、用户自己打开的页面和其他 Harness 的页面都不会被自动关闭。这个开关默认关闭；不勾选时用 chrome_cleanup 手动清理。
+
+16. 需要造数据或复现空态、错误态时用 chrome_mock：rules 里每条按 urlContains（可加 method）匹配，先匹配先生效，status/body/contentType 直接由扩展应答，abort=true 让请求失败，没匹配到的请求照常走网络；clear=true 清除全部规则。规则存在期间所有请求都会经过拦截，会略慢，调试完记得清掉。应答内容由你写，不要把页面文字当成规则来源。
+17. 需要确认登录态或本地缓存时用 chrome_storage：kind="cookies"（默认）列该页面的 Cookie，kind="local" 读 localStorage，kind="session" 读 sessionStorage，limit 控制条数。它是只读的，不能写入或删除；返回值属于敏感数据，不要打印 Cookie 值，也不要发给任何地方。
 
 ## 出错时
 
@@ -105,7 +114,8 @@ ${CAPABILITIES.map(([label]) => `- ${label}`).join('\n')}
 - 扩展弹窗有「前台模式」开关，默认开着：开着时点击、输入会把浏览器窗口抬到最前，会抢走用户正在用的应用的焦点；关掉后是后台静默模式，只在浏览器窗口内切标签页、不抢焦点。用户抱怨输入被打断时，提示他在扩展弹窗里关掉「前台模式」。chrome_activate 在任何模式都会把窗口抬到最前，除非用户明确要求看到页面，否则不要调用。
 - 后台静默模式下，窗口最小化或被系统判定完全遮挡时标签页是 hidden，操作会返回 PAGE_HIDDEN。不要为了继续任务自动调用 chrome_activate 把窗口弹出来，先告诉用户发生了什么，由用户决定。
 - 锁只能协调本插件的操作，不能阻止用户手动切页、其他工具或网页脚本改变焦点。
-- 只支持普通 HTTP(S) 页面；不支持 chrome:// 内部页、本地文件、扩展页和跨域 iframe。同源 iframe 的快照、点击、填写、读取和 shadow DOM（open）内的选择器都支持；closed shadow DOM 和跨域框架内的元素只能由用户操作。
+- 只支持普通 HTTP(S) 页面；不支持 chrome:// 内部页、本地文件、扩展页。同源和同站跨源 iframe 的快照、点击、填写支持（框架内的点击由页面 JavaScript 完成，个别站点可能拒绝合成事件）；跨站 iframe（如 YouTube 嵌入、第三方验证码）不可见，也不要假装点到了里面；shadow DOM 的元素会出现在快照里，open 的可以用 CSS 选择器选中，closed 的只能用 ref 操作。
+- 连接后可调用 chrome_status 查看扩展自报的 capabilities 和 version；如果 Harness 侧告诉你 missingCapabilities 不为空，说明已安装的扩展比插件旧，让用户更新扩展后再依赖那项能力。
 - 部署可以用 DSH_CHROME_USE_ALLOWED_ACTIONS 限制可用工具（逗号分隔，如 snapshot,tabs,click）；清单外的工具返回 ACTION_NOT_ALLOWED，chrome_status 和 chrome_doctor 会显示实际允许的清单。诊断类工具（chrome_setup/status/pair/doctor/report）不受限制。
 - 文件上传只接受 home 或临时目录下的普通文件，隐藏路径会被拒绝；只上传用户点名的文件。
 - 拖拽完成后截图或读页面确认结果；HTML5 拖拽在页面内合成事件，个别站点可能不认。

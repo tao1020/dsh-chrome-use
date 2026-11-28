@@ -1088,6 +1088,10 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
         return { port: item.port, host: client?.host ?? item.host ?? null, name: client?.name ?? item.name ?? null, connected: Boolean(client?.connected), version: client?.version ?? null, error: client?.lastError || portErrors.get(item.port) || '' };
       }),
       enabled: auto,
+      // Feature negotiation: an agent can compare these with the tools the
+      // Harness exposes before relying on a capability the installed build lacks.
+      capabilities: CAPABILITIES,
+      version: chrome.runtime.getManifest().version,
       error: lastError,
       tabs: (await chrome.tabs.query({})).filter(tab => controller.attached.has(tab.id)).map(tab => ({ id: tab.id, title: tab.title, attached: true })),
     };

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { BrowserController, POINT_FN, keyDescriptor, pageUrl, tabLocation } from '../extension/controller.js';
+import { BrowserController, POINT_FN, frameCollect, keyDescriptor, pageUrl, tabLocation } from '../extension/controller.js';
 import { TOOLS, validateArgs } from '../extension/protocol.js';
 
 function fixture(overrides = {}) {
@@ -45,6 +45,21 @@ function fixture(overrides = {}) {
   };
   return { controller: new BrowserController(api), api, calls, listeners, groups };
 }
+// Emulates a same-site subframe for the isolated-world path: the count query,
+// the paged collector and the action guard all run through Runtime.evaluate.
+function frameWorld(names, options = {}) {
+  return params => {
+    const expression = String(params.expression);
+    if (expression.includes('node.click()')) return { result: { value: 'OK' } };
+    if (expression.includes('const label =')) return { result: { value: JSON.stringify(options.guard ?? { label: names[0] ?? '', role: 'button' }) } };
+    if (/\.length\s*$/.test(expression.trim())) return { result: { value: names.length } };
+    const slice = expression.match(/nodes\.slice\((\d+),\s*(\d+)\)/);
+    const offset = slice ? Number(slice[1]) : 0;
+    const end = slice ? Number(slice[2]) : names.length;
+    return { result: { value: JSON.stringify(names.slice(offset, end).map((name, position) => ({ index: offset + position, role: 'button', name }))) } };
+  };
+}
+
 test('schemas reject unknown fields, invalid URL schemes and boundaries', () => {
   assert.equal(new Set(TOOLS.map(t => t.name)).size, TOOLS.length);
   for (const url of ['file:///etc/passwd', 'javascript:alert(1)', 'https://user:password@example.com']) assert.throws(() => validateArgs('chrome_open', { url, group: 'docs' }));
@@ -1202,7 +1217,7 @@ test('snapshot flags subframe elements so a model knows where they live', async 
   const snapshot = await controller.execute('snapshot', { tabId: 7 });
   assert.equal(snapshot.elements.find(element => element.name === 'Inner').frame, true);
   assert.equal(snapshot.elements.find(element => element.name === 'Top').frame, undefined);
-  assert.match(snapshot.frameNote, /same-origin subframe/);
+  assert.match(snapshot.frameNote, /subframe/);
 });
 
 test('the click point is translated from a same-origin frame into top-level coordinates', () => {
@@ -1341,6 +1356,18 @@ test('network lists can be filtered by method, status and URL text', async () =>
   assert.equal((await controller.execute('network', { tabId: 7, urlContains: '/api/', method: 'GET' })).requests.length, 1);
 });
 
+test('storage defaults to cookies for the tab origin and refuses another origin', async () => {
+  const built = fixture({
+    'Network.getCookies': params => ({ cookies: [{ name: 'sid', value: 'x', domain: 'example.com', path: '/', httpOnly: true, secure: true, session: true, size: 3 }].filter(() => String(params.urls[0]).startsWith('https://example.com')) }),
+  });
+  const { controller } = built;
+  await controller.execute('claim', { tabId: 7 });
+  const listed = await controller.execute('storage', { tabId: 7 });
+  assert.equal(listed.kind, 'cookies');
+  assert.equal(listed.cookies[0].name, 'sid');
+  await assert.rejects(controller.execute('storage', { tabId: 7, kind: 'cookies', url: 'https://evil.test/' }), /tab origin/);
+});
+
 test('storage reads localStorage and sessionStorage without writing', async () => {
   const { controller, calls } = fixture({
     'Runtime.evaluate': () => ({ result: { value: '{"theme":"dark","token":"abc"}' } }),
@@ -1353,4 +1380,120 @@ test('storage reads localStorage and sessionStorage without writing', async () =
   const evaluate = calls.find(([method]) => method === 'Runtime.evaluate');
   assert.match(evaluate[1].expression, /localStorage/);
   assert.doesNotMatch(evaluate[1].expression, /setItem|removeItem|clear\(/);
+});
+
+test('paging walks the main document and subframes without repeating or losing elements', async () => {
+  const built = fixture({
+    'Accessibility.getFullAXTree': () => ({ nodes: ['Alpha', 'Beta', 'Gamma'].map((name, index) => ({ role: { value: 'button' }, name: { value: name }, backendDOMNodeId: 700 + index })) }),
+    'Page.getFrameTree': () => ({ frameTree: { frame: { id: 'main', url: 'https://example.com/' }, childFrames: [{ frame: { id: 'child', url: 'https://widget.example/embed' } }] } }),
+    'Page.createIsolatedWorld': () => ({ executionContextId: 7 }),
+    'Runtime.evaluate': frameWorld(['Pay Now', 'Terms', 'Cancel']),
+  });
+  const { controller } = built;
+  await controller.execute('claim', { tabId: 7 });
+  const seen = [];
+  let offset = 0;
+  for (let page = 0; page < 6; page += 1) {
+    const snapshot = await controller.execute('snapshot', { tabId: 7, maxElements: 2, offset });
+    seen.push(...snapshot.elements.map(entry => entry.name));
+    if (!snapshot.truncated) break;
+    offset = snapshot.nextOffset;
+  }
+  assert.deepEqual(seen, ['Alpha', 'Beta', 'Gamma', 'Pay Now', 'Terms', 'Cancel']);
+});
+
+test('a long subframe list is paged like the main document, never capped or mislabelled', async () => {
+  const names = Array.from({ length: 301 }, (_, index) => `Item ${index}`);
+  const built = fixture({
+    'Accessibility.getFullAXTree': () => ({ nodes: [] }),
+    'Page.getFrameTree': () => ({ frameTree: { frame: { id: 'main', url: 'https://example.com/' }, childFrames: [{ frame: { id: 'child', url: 'https://widget.example/list' } }] } }),
+    'Page.createIsolatedWorld': () => ({ executionContextId: 7 }),
+    'Runtime.evaluate': frameWorld(names),
+  });
+  const { controller } = built;
+  await controller.execute('claim', { tabId: 7 });
+  const first = await controller.execute('snapshot', { tabId: 7, maxElements: 500 });
+  assert.equal(first.elements.length, 301);
+  assert.equal(first.truncated, false);
+  assert.equal(first.elements.at(-1).name, 'Item 300');
+  const seen = [];
+  let offset = 0;
+  for (let page = 0; page < 10; page += 1) {
+    const snapshot = await controller.execute('snapshot', { tabId: 7, maxElements: 100, offset });
+    seen.push(...snapshot.elements.map(entry => entry.name));
+    if (!snapshot.truncated) break;
+    assert.ok(snapshot.nextOffset > offset);
+    offset = snapshot.nextOffset;
+  }
+  assert.deepEqual(seen, names);
+});
+
+test('a subframe label keeps every character, including s', () => {
+  const expression = frameCollect(0, 5);
+  const node = { tagName: 'BUTTON', innerText: 'save changes', value: '', getAttribute: () => null };
+  const document = { querySelectorAll: () => [node] };
+  const collected = JSON.parse(new Function('document', `return ${expression}`)(document));
+  assert.deepEqual(collected, [{ index: 0, role: 'button', name: 'save changes' }]);
+});
+
+test('a subframe that cannot be read is reported instead of silently missing', async () => {
+  const built = fixture({
+    'Accessibility.getFullAXTree': () => ({ nodes: [] }),
+    'Page.getFrameTree': () => ({ frameTree: { frame: { id: 'main' }, childFrames: [{ frame: { id: 'child', url: 'https://widget.example/embed' } }] } }),
+    'Page.createIsolatedWorld': () => { throw new Error('Target closed'); },
+  });
+  const { controller } = built;
+  await controller.execute('claim', { tabId: 7 });
+  const snapshot = await controller.execute('snapshot', { tabId: 7 });
+  assert.equal(snapshot.skippedFrames, 1);
+  assert.match(snapshot.skippedNote, /could not be read/);
+  assert.equal(snapshot.elements.length, 0);
+});
+
+test('a subframe control that changes role between snapshot and click is refused', async () => {
+  const built = fixture({
+    'Accessibility.getFullAXTree': () => ({ nodes: [] }),
+    'Page.getFrameTree': () => ({ frameTree: { frame: { id: 'main' }, childFrames: [{ frame: { id: 'child', url: 'https://widget.example/embed' } }] } }),
+    'Page.createIsolatedWorld': () => ({ executionContextId: 7 }),
+    'Runtime.evaluate': frameWorld(['Save'], { guard: { label: 'Save', role: 'link' } }),
+  });
+  const { controller } = built;
+  await controller.execute('claim', { tabId: 7 });
+  const snapshot = await controller.execute('snapshot', { tabId: 7 });
+  const framed = snapshot.elements.find(entry => entry.frame);
+  await assert.rejects(controller.execute('click', { tabId: 7, ref: framed.ref }), /STALE_ELEMENT/);
+});
+
+test('a mock body that cannot be encoded is refused before interception starts', async () => {
+  const built = fixture({ 'Fetch.enable': {}, 'Fetch.continueRequest': {} });
+  const { controller } = built;
+  await controller.execute('claim', { tabId: 7 });
+  await assert.rejects(controller.execute('mock', { tabId: 7, rules: [{ urlContains: '/api', body: '\ud800' }] }), /cannot be sent/);
+  assert.ok(!built.calls.some(([method]) => method === 'Fetch.enable'), 'interception never starts for a refused rule');
+});
+
+test('a cross-origin frame is read into the snapshot and clicked through its own world', async () => {
+  const sent = [];
+  const built = fixture({
+    'Page.getFrameTree': () => ({ frameTree: { frame: { id: 'main', url: 'http://127.0.0.1:9101/' }, childFrames: [{ frame: { id: 'child', url: 'http://127.0.0.1:9102/inner' } }] } }),
+    'Page.createIsolatedWorld': () => ({ executionContextId: 7 }),
+    'Runtime.evaluate': params => {
+      sent.push(params);
+      if (String(params.expression).includes('node.click()')) return { result: { value: 'OK' } };
+      if (String(params.expression).includes('const label =')) return { result: { value: JSON.stringify({ label: 'Inner Button', role: 'button' }) } };
+      return frameWorld(['Inner Button'])(params);
+    },
+  });
+  const { controller } = built;
+  await controller.execute('claim', { tabId: 7 });
+  const snapshot = await controller.execute('snapshot', { tabId: 7 });
+  const framed = snapshot.elements.find(entry => entry.name === 'Inner Button');
+  assert.equal(framed.frame, true);
+  assert.equal(framed.frameUrl, 'http://127.0.0.1:9102/inner');
+  await controller.execute('click', { tabId: 7, ref: framed.ref });
+  const click = sent.find(params => params.contextId === 7 && String(params.expression).includes("node.click()"));
+  assert.ok(click, 'the click runs inside the frame world');
+  // Synthetic mouse events cannot reach the frame, and healing a frame ref
+  // against the main document would silently act on the wrong node.
+  await assert.rejects(controller.execute('hover', { tabId: 7, ref: framed.ref }), /FRAME_UNSUPPORTED/);
 });

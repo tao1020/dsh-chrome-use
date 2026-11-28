@@ -1,5 +1,30 @@
 # 更新日志
 
+## [0.19.0] - 2026-11-29
+
+### 新增
+
+- `chrome_snapshot` 支持 `region`（只读某个子树）、`maxElements`/`offset`（分页）并在还有内容时返回 `nextOffset`，长页面不再只能截取前 500 个元素。
+- 元素失效自动重绑：ref 指向的节点被重新渲染后，扩展会按“角色 + 可访问名称”唯一匹配重试一次；快照回复里的 `healed` 报告重绑次数，仍然唯一不了才报 `STALE_ELEMENT`。
+- `chrome_network` 支持 `urlContains`、`status`、`method` 过滤，长会话里不用再翻整个列表。
+- 新增 `chrome_mock`：按 URL（可加 method）模拟响应或让请求失败，用于复现空态、错误态和慢接口，规则存在期间才开启拦截。
+- 新增 `chrome_storage`：只读查看当前页面的 Cookie、localStorage、sessionStorage，便于确认登录态；不提供任何写入。
+- 同站跨源 iframe：快照会把同站 iframe 内的元素一并列出（带 `frame=true` 和 `frameUrl`），点击、填写、选择在子框架内可用。`chrome.debugger` 拒绝 `Target` 域、`DOM.getDocument({pierce:true})` 也看不进跨域框架，所以实现走 `Page.createIsolatedWorld` + `Runtime.evaluate`，在框架自己的隔离世界里执行页面 JavaScript。跨站或沙箱 iframe（YouTube 嵌入、第三方支付/验证码）是独立进程，`Page.getFrameTree` 根本不列，扩展读不到也不会提示，需要用户自己操作。frame ref 只支持这三类动作，悬停、拖拽、上传、右键点击会明确报 `FRAME_UNSUPPORTED`，不会退化成操作主文档里的同名元素。
+- 能力协商：扩展在握手和 `chrome_status` 里报告 `capabilities` / `version`，桥接层的 `status()` 返回 `missingCapabilities`，旧扩展会明确说明缺哪项能力。
+- 真实 Chrome 冒烟：`npm run smoke` 用无头 Chrome 通过 `Extensions.loadUnpacked` 加载未打包扩展（Chrome 137+ 的品牌版已忽略 `--load-extension`），校验由路径推出的扩展 id、等 service worker 起来，并在 worker 里读 `chrome.runtime.getManifest().version` 与 `package.json` 比对；CI 新增 `Real Chrome smoke` 任务。
+- 商店发布流水线：`npm run publish:store`（`scripts/publish-store.mjs`）通过 Chrome Web Store API 上传 `dist/` 里的 zip 并提交审核，`.github/workflows/publish-store.yml` 提供带环境审批的工作流；凭据只从环境读取。
+
+### 修复（独立评审后）
+
+- 分页把主文档和子框架元素放进同一个列表再切 `offset`/`limit`，`maxElements` 不会被框架元素撑破，翻页时框架元素不再每页重复，也不会出现「后面永远读不到」或 `nextOffset` 无限循环；`truncated` 只在真的还有内容时为真。
+- `healed` 改为每份快照的计数，不再累计历史。
+- `chrome_storage` 的 `kind` 默认值生效（默认 `cookies`），Cookie 只允许读当前标签页同源地址，避免顺手读到别的站点。
+- `chrome_mock` 的规则现在递归校验（缺字段、未知字段、`status: 9999`、空 `urlContains` 都会被拒）；模拟响应失败时改为放行请求，页面不会因为一条坏规则卡死。
+- 先开启拦截再写入规则，`Fetch.enable` 失败时不会留下半套 mock 状态。
+
+### 文档
+
+- README 增加维护者一节（冒烟、商店发布、tag 与版本一致性要求），技能正文补充分页、重绑、`chrome_mock`、`chrome_storage`、跨域框架和能力自报的用法。
 ## [0.18.0] - 2026-11-28
 
 ### 新增
