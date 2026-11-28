@@ -1,6 +1,6 @@
 {
   "name": "dsh-chrome-use",
-  "version": "0.18.0",
+  "version": "0.19.0",
   "description": "Control Google Chrome tabs from DeepSeek Harness.",
   "type": "module",
   "main": "./src/index.js",
@@ -45,7 +45,9 @@
     "package": "node scripts/package.mjs",
     "dev": "node scripts/dev.mjs",
     "build:client": "node scripts/build-client.mjs",
-    "prepack": "npm run build:client"
+    "prepack": "npm run build:client",
+    "smoke": "node scripts/smoke-extension.mjs",
+    "publish:store": "node scripts/publish-store.mjs"
   },
   "dependencies": {
     "ws": "8.22.0"

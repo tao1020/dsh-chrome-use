@@ -3,7 +3,7 @@ import { randomBytes, randomInt, randomUUID, timingSafeEqual } from 'node:crypto
 import { mkdir, readFile, writeFile, rename } from 'node:fs/promises';
 import { join } from 'node:path';
 import { WebSocketServer, WebSocket } from 'ws';
-import { PORT, MAX_MESSAGE, DEADLINE_MS, PARALLEL_TABS, MESSAGE_UNREAD_MAX } from '../extension/protocol.js';
+import { PORT, MAX_MESSAGE, DEADLINE_MS, PARALLEL_TABS, MESSAGE_UNREAD_MAX, CAPABILITIES } from '../extension/protocol.js';
 import { classifyPairingCode, generatePairingCode, normalizePairingCode } from '../extension/pairing-code.js';
 import { candidatePorts, portStateDir, preferencePath, probePort, readPreferredPort, writePreferredPort } from './port-selector.js';
 import { DEFAULT_HOST, normalizeServerHost } from '../extension/host.js';
@@ -188,6 +188,8 @@ export class Bridge {
       bindHost: this.bindHost,
       ...(this.requestedPort !== undefined && this.requestedPort !== this.port ? { requestedPort: this.requestedPort } : {}),
       extensionVersion: this.peer?.extensionVersion ?? null,
+      features: this.peer?.features ?? [],
+      missingCapabilities: CAPABILITIES.filter(capability => !(this.peer?.features ?? []).includes(capability)),
       claimedTabs: [...this.claims.keys()],
       ...(this.inbox?.unread ? { messages: { unread: this.inbox.unread, senders: [...this.inbox.senders] } } : {}),
       ...(this.lastError ? { lastError: this.lastError } : {}),
@@ -278,7 +280,8 @@ export class Bridge {
           this.identity = identity;
           client.authenticated = true;
           client.extensionVersion = typeof message.version === 'string' && /^\d+(\.\d+){0,3}$/.test(message.version) ? message.version : null;
-          client.parallel = Array.isArray(message.features) && message.features.includes(PARALLEL_TABS);
+          client.features = Array.isArray(message.features) ? message.features.filter(feature => typeof feature === 'string' && feature.length <= 60).slice(0, 40) : [];
+          client.parallel = client.features.includes(PARALLEL_TABS);
           this.lastError = undefined;
           clearTimeout(timer);
           client.send(JSON.stringify({ type: 'ready', token: identity.token, protocol: 1, ...(this.name ? { name: this.name } : {}) }));

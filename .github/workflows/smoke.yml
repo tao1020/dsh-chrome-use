@@ -1,0 +1,20 @@
+name: Real Chrome smoke
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci --ignore-scripts
+      - name: Load the unpacked extension in headless Chrome
+        run: |
+          CHROME_BIN="$(command -v google-chrome-stable || command -v google-chrome || command -v chromium)"
+          test -n "$CHROME_BIN"
+          CHROME_BIN="$CHROME_BIN" node scripts/smoke-extension.mjs

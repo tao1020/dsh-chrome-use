@@ -114,6 +114,12 @@ DSH_CHROME_USE_PORT=18791 DSH_CHROME_USE_BIND_HOST=192.168.1.20 dsh web
 ssh -L 18791:127.0.0.1:18791 user@server
 ```
 
+### 8. 维护者：冒烟测试与商店发布
+
+- `npm run smoke`：用无头 Chrome 加载未打包的扩展，确认 service worker 正常注册。CI 的 `Real Chrome smoke` 任务跑同一段脚本。
+- `npm run publish:store`：把 `dist/dsh-chrome-use-<version>.zip` 上传到 Chrome Web Store 并提交审核。需要环境变量 `CWS_CLIENT_ID`、`CWS_CLIENT_SECRET`、`CWS_REFRESH_TOKEN`、`CWS_APP_ID`；凭据只从环境读取，不会写进日志。工作流 `.github/workflows/publish-store.yml` 用 `chrome-web-store` 环境保存这些密钥，并要求 tag `release-v<version>` 指向 main 的同一个提交。
+- 商店版本和 npm 版本共用 `package.json` 的 `version`；发布前先 `npm run package` 生成 zip，并在 `CHROMEWEBSTORE.md` 的版本表加一行。
+
 ---
 
 # dsh-chrome-use
@@ -231,3 +237,9 @@ For a server on the public internet, prefer an SSH tunnel that maps the remote b
 ```bash
 ssh -L 18791:127.0.0.1:18791 user@server
 ```
+
+### 8. Maintainers: smoke test and store release
+
+- `npm run smoke` loads the unpacked extension in headless Chrome and checks that its service worker registers; the `Real Chrome smoke` CI job runs the same script.
+- `npm run publish:store` uploads `dist/dsh-chrome-use-<version>.zip` to the Chrome Web Store and submits it for review. It reads `CWS_CLIENT_ID`, `CWS_CLIENT_SECRET`, `CWS_REFRESH_TOKEN` and `CWS_APP_ID` from the environment only. `.github/workflows/publish-store.yml` keeps those secrets in the `chrome-web-store` environment and requires the `release-v<version>` tag to point at main.
+- The store build and the npm package share `package.json`'s `version`; run `npm run package` before publishing and add the matching row to the version table in `CHROMEWEBSTORE.md`.

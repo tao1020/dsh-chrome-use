@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { PARALLEL_TABS } from '../extension/protocol.js';
+import { CAPABILITIES, PARALLEL_TABS } from '../extension/protocol.js';
 import { encodePairingCode } from '../extension/pairing-code.js';
 import { IDLE_CLOSE_MS } from '../extension/idle-tabs.js';
 
@@ -229,7 +229,7 @@ test('worker startup migrates the legacy token to port 18791 and disconnect keep
   assert.equal(sockets[0].url, 'ws://127.0.0.1:18791/bridge');
   assert.equal(sockets[0].sent[0].type, 'auth');
   assert.equal(sockets[0].sent[0].code, undefined);
-  assert.deepEqual(sockets[0].sent[0].features, [PARALLEL_TABS]);
+  assert.deepEqual(sockets[0].sent[0].features, CAPABILITIES);
   assert.deepEqual(stored.connections, [{ port: 18791, token: 'a'.repeat(64), host: '127.0.0.1' }]);
   assert.equal(stored.token, undefined);
   const status = await message('status');

@@ -139,6 +139,7 @@ https://chromewebstore.google.com/detail/anobmlnjdeahldefeikjdmmnckphpdhc
 
 | Version | Date | Changes | Status |
 |---------|------|---------|--------|
+| 0.19.0 | 2026-11-29 | 快照分页（`region`/`maxElements`/`offset`）、失效 ref 自动重绑、`chrome_network` 过滤、`chrome_mock` 请求模拟、`chrome_storage` 只读存储查看、同站跨源 iframe 读取与点击、能力协商（`capabilities`/`missingCapabilities`）。权限清单不变。 | Draft（待上传商店） |
 | 0.18.0 | 2026-11-28 | 进阶可选项：弹窗新增「服务器地址」，可连同一内网的另一台机器；只接受环回和内网 IP，默认仍是 `127.0.0.1`。CSP 的 `connect-src` 从固定回环放宽为任意 `ws:` 目标，因为 CSP 无法表达网段；实际可用地址由弹窗校验和 Harness 侧的 `DSH_CHROME_USE_BIND_HOST` 限制。 | Draft（待上传商店） |
 | 0.17.0 | 2026-11-26 | 标签页右键菜单复制 DSH Chrome Use 引用；新增 `contextMenus`、`offscreen`、`clipboardWrite` 权限，只写剪贴板不读取。 | Draft（待上传商店） |
 | 0.16.1 | 2026-11-26 | 调试器被其他扩展的 `chrome-extension://` frame 拦截时列出 frame 与扩展 ID，并给 `chrome://extensions/?id=` 定位；Chrome 主动 detach 但标签页还在时保留占用；detach 原因和关闭方（idle / chat / cleanup / disconnect）写进提示；`chrome_doctor` 在未附加时返回标签页状态和 frame 列表。新增 `webNavigation` 权限。 | Draft（待上传商店） |
